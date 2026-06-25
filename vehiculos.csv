@@ -1,0 +1,41 @@
+﻿ID;PLACA;COLOR;TAMAÑO;USUARIO;CHOFER;LICENCIA;SOAT VENC.;CATEGORÍA
+1;DEF125;Dorado;Grande;Fernando Morales;Laura Sánchez;83197857;11/12/2025;Bus
+2;ABC195;Azul;Mediano;Mariana Jiménez;María Muñoz;36687537;23/10/2027;Bus
+3;MNO928;Blanco;Mediano;Ricardo Álvarez;Daniel Flores;38898923;6/05/2027;Automóvil
+4;DEF467;Plateado;Grande;Carlos Moreno;Daniela Ramírez;60806024;24/11/2025;Bus
+5;BCD982;Plateado;Mediano;Luis Martínez;Isabella Chávez;20709497;5/10/2026;Automóvil
+6;VWX750;Plateado;Mediano;Gabriel Castillo;Miguel Gutiérrez;96977837;9/11/2025;Camioneta
+7;YZA846;Azul;Mediano;Tomás Mendoza;Daniel Muñoz;39476249;11/04/2027;Automóvil
+8;ABC924;Plateado;Extra Grande;Daniel González;Miguel Domínguez;52235350;25/08/2026;Automóvil
+9;VWX246;Gris;Mediano;Fernando Muñoz;Daniela Ortiz;88461803;10/11/2027;Motocicleta
+10;JKL241;Naranja;Extra Grande;Pedro López;Diego Flores;94214382;9/05/2026;Automóvil
+11;STU490;Marrón;Extra Grande;Álvaro Ortiz;Francisco García;25374874;14/12/2026;Camioneta
+12;STU261;Amarillo;Pequeño;Lucía Guerrero;Jorge Guerrero;24282218;17/02/2027;Camioneta
+13;GHI482;Rojo;Pequeño;Natalia Ruiz;Hugo Rodríguez;25014631;29/06/2027;Motocicleta
+14;JKL999;Marrón;Pequeño;Pedro Rojas;Luis Delgado;26879290;5/03/2026;Camioneta
+15;GHI371;Naranja;Extra Grande;Miguel Delgado;Valentina Ramos;63551839;20/07/2027;Camioneta
+16;VWX223;Azul;Mediano;Luis Álvarez;María Vásquez;84346088;30/09/2026;Motocicleta
+17;DEF824;Beige;Pequeño;Isabella González;Carlos Álvarez;19510312;3/05/2028;Bus
+18;VWX319;Naranja;Mediano;Elena Domínguez;Juliana Cruz;73481353;27/09/2027;Bus
+19;STU462;Verde;Extra Grande;Tomás López;Sofía López;64038913;11/05/2027;Camioneta
+20;JKL649;Amarillo;Mediano;Ricardo Gómez;Daniel Moreno;43528453;17/11/2025;Bus
+21;YZA200;Blanco;Pequeño;Pedro Cruz;Camila Aguilar;75181648;26/02/2028;Bus
+22;ABC268;Verde;Pequeño;Renata Ortiz;Tomás Chávez;66775103;8/03/2028;Camioneta
+23;JKL159;Marrón;Pequeño;Martina López;Ana Vásquez;73993471;10/04/2028;Camioneta
+24;YZA182;Rojo;Pequeño;Natalia González;Fernando Herrera;26090908;2/11/2026;Bus
+25;BCD183;Verde;Grande;Lucía Reyes;Martina Cruz;45650176;4/09/2027;Camioneta
+26;MNO568;Plateado;Pequeño;Juan Moreno;Ignacio Domínguez;23419256;13/11/2025;Camioneta
+27;MNO235;Plateado;Pequeño;Fernando Vargas;Paula Rivera;68812137;25/02/2027;Bus
+28;YZA108;Beige;Grande;Sofía Torres;Lucía Ramírez;24366125;30/04/2026;Motocicleta
+29;JKL834;Plateado;Mediano;Lucía Guerrero;Hugo Ortiz;16818112;22/12/2025;Bus
+30;ABC103;Plateado;Mediano;Lucía Rivera;Catalina Muñoz;67403166;5/07/2025;Camioneta
+31;GHI658;Blanco;Grande;Roberto Muñoz;Andrés Castro;27105448;9/09/2025;Motocicleta
+32;ABC466;Azul;Mediano;Sofía Castillo;Francisco Aguilar;93303777;28/04/2026;Bus
+33;GHI522;Blanco;Mediano;Sebastián Aguilar;Fernando Gutiérrez;31367172;23/01/2026;Automóvil
+34;VWX327;Azul;Extra Grande;Victoria Ramos;Isabella Morales;13176186;16/07/2026;Bus
+35;DEF891;Gris;Grande;Mariana Herrera;Daniela Álvarez;13704481;7/02/2026;Motocicleta
+36;MNO139;Negro;Extra Grande;Victoria Ruiz;Ricardo Jiménez;78642041;7/02/2026;Bus
+37;JKL360;Blanco;Extra Grande;Juan Medina;Daniela Díaz;58884978;16/11/2027;Camioneta
+38;PQR738;Plateado;Pequeño;Alejandro Guerrero;Alejandro Aguilar;53779528;18/09/2027;Motocicleta
+39;JKL530;Beige;Extra Grande;Jorge Soto;Elena Ramos;64502486;16/06/2025;Motocicleta
+40;STU904;Marrón;Grande;Tomás Romero;Catalina Reyes;78608612;10/02/2028;Bus
