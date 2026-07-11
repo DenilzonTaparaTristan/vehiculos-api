@@ -40,6 +40,8 @@ from vehiculo import (
     VehiculoAgente, construir_carriles, carril_inicio_aleatorio,
     cargar_flota_api, cargar_mapas_api, normalizar_distrito,
     cargar_semaforos_api, sincronizar_estado_api,
+    generar_semaforos_fallback, _adaptar_semaforos_a_distrito,
+    _completar_semaforos, actualizar_ciclo_semaforos,
     MAX_VEHICULOS_MAPA, TIPOS_VEHICULO, PLANO_FALLBACK,
     API_MAPAS_URL, API_SEMAFOROS_URL, API_VEHICULOS_URL,
 )
@@ -58,6 +60,9 @@ C_ASFALTO = "#1e1e24"
 
 PANEL_W = 290
 TOTAL_H = 800
+MIN_WINDOW_H = 860   # alto mínimo de ventana para que el panel completo quepa
+                     # (algunos mapas miden solo 600-800px de alto, insuficiente
+                     # para todos los botones del panel lateral)
 
 DISTRITO_ACTIVO = "centro"     # clave del distrito a simular
 
@@ -135,21 +140,62 @@ class SimulacionApp:
         mapa_w = self.distrito["width"]
         mapa_h = self.distrito["height"]
         total_w = mapa_w + PANEL_W
+        total_h = max(mapa_h, MIN_WINDOW_H)   # asegura espacio para todo el panel
 
         self.root.title(
             f"Sistema MAS — {self.distrito['nombre']}  |  Agente Vehículo "
             f"(Mapas + Semáforos + Vehículos vía API)"
         )
-        self.root.geometry(f"{total_w}x{mapa_h}")
+        self.root.geometry(f"{total_w}x{total_h}")
         self.root.configure(bg=C_BG)
-        self.root.resizable(False, False)
+        self.root.resizable(True, True)   # el usuario puede agrandar la ventana
+        self.root.minsize(total_w, 500)
 
         # ── Frames ───────────────────────────────────────────────────────────
         self.frame_mapa = tk.Frame(self.root, width=mapa_w, height=mapa_h, bg=C_BG)
         self.frame_mapa.pack(side="left", fill="both")
-        self.frame_panel = tk.Frame(self.root, width=PANEL_W, height=mapa_h, bg=C_PANEL)
+        self.frame_panel = tk.Frame(self.root, width=PANEL_W, bg=C_PANEL)
         self.frame_panel.pack(side="right", fill="y")
         self.frame_panel.pack_propagate(False)
+
+        # El panel lateral es DESPLAZABLE (scroll): así, aunque el mapa
+        # activo sea bajo (600px en 'nuevo58', por ejemplo) o la ventana
+        # se achique, siempre se puede llegar a TODOS los botones del
+        # panel con la rueda del mouse o la barra de scroll.
+        self.panel_canvas = tk.Canvas(self.frame_panel, bg=C_PANEL,
+                                      highlightthickness=0, width=PANEL_W)
+        self.panel_scrollbar = tk.Scrollbar(self.frame_panel, orient="vertical",
+                                            command=self.panel_canvas.yview)
+        self.panel_canvas.configure(yscrollcommand=self.panel_scrollbar.set)
+        self.panel_canvas.pack(side="left", fill="both", expand=True)
+        self.panel_scrollbar.pack(side="right", fill="y")
+
+        self.panel_inner = tk.Frame(self.panel_canvas, bg=C_PANEL)
+        self._panel_window_id = self.panel_canvas.create_window(
+            (0, 0), window=self.panel_inner, anchor="nw", width=PANEL_W
+        )
+
+        def _actualizar_scrollregion(event=None):
+            self.panel_canvas.configure(scrollregion=self.panel_canvas.bbox("all"))
+        self.panel_inner.bind("<Configure>", _actualizar_scrollregion)
+
+        def _on_mousewheel(event):
+            # Windows/Mac mandan delta en múltiplos de 120; Linux usa Button-4/5
+            delta = -1 if event.delta > 0 else 1
+            self.panel_canvas.yview_scroll(delta, "units")
+
+        def _activar_scroll(event=None):
+            self.panel_canvas.bind_all("<MouseWheel>", _on_mousewheel)
+            self.panel_canvas.bind_all("<Button-4>", lambda ev: self.panel_canvas.yview_scroll(-1, "units"))
+            self.panel_canvas.bind_all("<Button-5>", lambda ev: self.panel_canvas.yview_scroll(1, "units"))
+
+        def _desactivar_scroll(event=None):
+            self.panel_canvas.unbind_all("<MouseWheel>")
+            self.panel_canvas.unbind_all("<Button-4>")
+            self.panel_canvas.unbind_all("<Button-5>")
+
+        self.panel_canvas.bind("<Enter>", _activar_scroll)
+        self.panel_canvas.bind("<Leave>", _desactivar_scroll)
 
         self.canvas = tk.Canvas(self.frame_mapa, width=mapa_w, height=mapa_h,
                                 bg=C_BG, highlightthickness=0)
@@ -172,7 +218,7 @@ class SimulacionApp:
         # ── Tiempo y sync ────────────────────────────────────────────────────
         self.last_time = time.time()
         self._last_sem_refresh = 0
-        self.SEM_REFRESH_INTERVAL = 4.0   # refrescar semáforos remotos cada 4s
+        self.SEM_REFRESH_INTERVAL = 60.0  # refrescar semáforos cada 60s (no cada 4s)
 
         self._sync_thread = threading.Thread(target=self._sync_loop, daemon=True)
         self._sync_thread.start()
@@ -188,40 +234,117 @@ class SimulacionApp:
     #  CARGA INICIAL DE LAS 3 APIs
     # ════════════════════════════════════════════════════════════════════════
     def _cargar_todo(self):
-        # 1) Mapas
-        distritos = cargar_mapas_api()
-        usando_fallback_mapa = (len(distritos) == 1 and
-                                 distritos[0].get("clave") == PLANO_FALLBACK["clave"]
-                                 and "config" not in distritos[0])
-        encontrado = None
-        for d in distritos:
-            if d.get("clave") == DISTRITO_ACTIVO:
-                encontrado = d
+        """
+        Carga las 3 APIs en hilos paralelos para no bloquear la UI.
+        Render puede tardar hasta 45s en despertar del plan free:
+        si cargáramos todo secuencial, la ventana se quedaría congelada
+        ese tiempo. Con hilos, el usuario ve el progreso en tiempo real.
+        """
+        import threading as _th
+
+        # Resultados compartidos entre hilos
+        res = {"distritos": None, "semaforos": None, "flota": None}
+
+        def hilo_mapas():
+            res["distritos"] = cargar_mapas_api()
+
+        def hilo_semaforos():
+            # Usa la misma lógica de reintentos que las demás APIs
+            from vehiculo import _get_con_reintentos
+            r = _get_con_reintentos(API_SEMAFOROS_URL, "API Semáforos")
+            if r is not None:
+                try:
+                    res["semaforos"] = r.json()
+                except Exception:
+                    res["semaforos"] = []
+            else:
+                res["semaforos"] = []
+
+        def hilo_flota():
+            res["flota"] = cargar_flota_api()
+
+        # Lanzar los 3 en paralelo
+        t_mapas = _th.Thread(target=hilo_mapas,     daemon=True)
+        t_sems  = _th.Thread(target=hilo_semaforos, daemon=True)
+        t_flota = _th.Thread(target=hilo_flota,     daemon=True)
+        t_mapas.start(); t_sems.start(); t_flota.start()
+
+        # Animar la ventana de carga mientras esperamos
+        dots = 0
+        while t_mapas.is_alive() or t_sems.is_alive() or t_flota.is_alive():
+            dots = (dots + 1) % 4
+            estado = "Conectando con APIs de Render" + "." * dots + " " * (3 - dots)
+            estado += f"\n(Render puede tardar ~40s si el servicio estaba inactivo)"
+            try:
+                self.ventana_carga.lbl_status.config(text=estado)
+                self.ventana_carga.top.update()
+            except Exception:
                 break
-        if encontrado is None and distritos:
-            encontrado = distritos[0]
+            time.sleep(0.4)
+
+        # ── Procesar resultado de Mapas ──────────────────────────────────────
+        distritos = res["distritos"] or [PLANO_FALLBACK]
+        self._distritos_raw = distritos   # se guarda para el selector de mapas
+        usando_fallback_mapa = (
+            len(distritos) == 1 and
+            distritos[0].get("clave") == PLANO_FALLBACK["clave"] and
+            "config" not in distritos[0]
+        )
+        encontrado = next(
+            (d for d in distritos if d.get("clave") == DISTRITO_ACTIVO),
+            distritos[0] if distritos else None
+        )
         self.distrito = normalizar_distrito(encontrado) if encontrado else PLANO_FALLBACK
         self.ventana_carga.marcar(
             "mapas", not usando_fallback_mapa,
             detalle=f"({self.distrito['clave']})"
         )
-
         self.carriles = construir_carriles(self.distrito)
 
-        # 2) Semáforos
-        self.semaforos_remotos = cargar_semaforos_api(self.distrito["clave"])
+        # ── Procesar resultado de Semáforos ──────────────────────────────────
+        todos_sems = res["semaforos"] or []
+        mapa_clave = self.distrito["clave"]
+
+        # Filtrar entradas de prueba inválidas ("string", etc.)
+        todos_sems = [s for s in todos_sems
+                      if isinstance(s, dict) and
+                      s.get("mapa_clave") not in ("string", None)]
+
+        # Buscar: exacto → adaptar alternativo → fallback total
+        # NOTA: ya no se completa automáticamente. Si faltan intersecciones,
+        # el usuario usa el botón "COMPLETAR SEMÁFOROS" cuando quiera.
+        exactos = [s for s in todos_sems if s.get("mapa_clave") == mapa_clave]
+        if exactos:
+            from vehiculo import _fijar_anclas_semaforos
+            self.semaforos_remotos    = _fijar_anclas_semaforos(exactos)
+            self.semaforos_son_reales = True
+            print(f"[API Semáforos] ✓ {len(exactos)} semáforos de API para '{mapa_clave}'")
+        else:
+            claves = sorted(set(s.get("mapa_clave") for s in todos_sems if s.get("mapa_clave")))
+            if claves:
+                sem_alt = [s for s in todos_sems if s.get("mapa_clave") == claves[0]]
+                self.semaforos_remotos    = _adaptar_semaforos_a_distrito(sem_alt, self.distrito)
+                self.semaforos_son_reales = True
+                print(f"[API Semáforos] ✓ Usando '{claves[0]}' ({len(self.semaforos_remotos)}) "
+                      f"adaptado a '{mapa_clave}'")
+            else:
+                self.semaforos_remotos    = generar_semaforos_fallback(self.distrito)
+                self.semaforos_son_reales = False
+                print(f"[API Semáforos] ⚠ Sin datos. Usando {len(self.semaforos_remotos)} locales.")
+
         self.ventana_carga.marcar(
-            "semaforos", len(self.semaforos_remotos) > 0,
+            "semaforos", self.semaforos_son_reales,
             detalle=f"({len(self.semaforos_remotos)})"
         )
 
-        # 3) Vehículos
-        self.flota_bd = cargar_flota_api()
+        # ── Procesar resultado de Flota ───────────────────────────────────────
+        self.flota_bd = res["flota"] or []
         self.ventana_carga.marcar(
             "vehiculos", len(self.flota_bd) > 0,
             detalle=f"({len(self.flota_bd)})"
         )
-        time.sleep(0.4)
+        time.sleep(0.5)
+
 
     # ── refrescar semáforos remotos periódicamente ───────────────────────────
     def _refrescar_semaforos_si_corresponde(self, now):
@@ -230,12 +353,37 @@ class SimulacionApp:
             threading.Thread(target=self._refrescar_semaforos_bg, daemon=True).start()
 
     def _refrescar_semaforos_bg(self):
+        """Refresca semáforos en hilo separado sin bloquear la simulación."""
         try:
-            nuevos = cargar_semaforos_api(self.distrito["clave"])
-            if nuevos:
-                self.semaforos_remotos = nuevos
+            from vehiculo import _get_con_reintentos
+            r = _get_con_reintentos(API_SEMAFOROS_URL, "API Semáforos (refresco)")
+            if r is None:
+                return
+            todos = r.json()
+            if not isinstance(todos, list):
+                return
+            mapa_clave = self.distrito["clave"]
+            # Filtrar inválidos
+            todos = [s for s in todos if isinstance(s, dict) and
+                     s.get("mapa_clave") not in ("string", None)]
+            # Buscar exactos o alternativos (sin completar automáticamente)
+            filtrados = [s for s in todos if s.get("mapa_clave") == mapa_clave]
+            if filtrados:
+                from vehiculo import _fijar_anclas_semaforos
+                filtrados = _fijar_anclas_semaforos(filtrados)
+            else:
+                claves = sorted(set(s.get("mapa_clave") for s in todos if s.get("mapa_clave")))
+                if claves:
+                    alt = [s for s in todos if s.get("mapa_clave") == claves[0]]
+                    filtrados = _adaptar_semaforos_a_distrito(alt, self.distrito)
+            if filtrados:
+                self.semaforos_remotos    = filtrados
+                self.semaforos_son_reales = True
+            else:
+                self.semaforos_remotos    = generar_semaforos_fallback(self.distrito)
+                self.semaforos_son_reales = False
         except Exception:
-            pass
+            pass   # silencioso en hilos de refresco
 
     # ── añadir vehículo inicial ──────────────────────────────────────────────
     def _agregar_vehiculo_inicial(self, categoria: str):
@@ -257,7 +405,8 @@ class SimulacionApp:
         if self._ya_en_mapa(datos["id"]):
             return False
 
-        carril, pos = carril_inicio_aleatorio(self.carriles, self.distrito)
+        carril, pos = carril_inicio_aleatorio(self.carriles, self.distrito,
+                                              vehiculos_existentes=self.vehiculos_mapa)
         if carril is None:
             return False
 
@@ -279,24 +428,50 @@ class SimulacionApp:
     #  PANEL LATERAL
     # ════════════════════════════════════════════════════════════════════════
     def _construir_panel(self):
-        f = self.frame_panel
+        f = self.panel_inner
         ft = ("Courier New", 9, "bold")
         fn = ("Courier New", 8)
 
         tk.Label(f, text="══ AGENTE VEHÍCULO ══", bg=C_PANEL, fg=C_CYAN,
                  font=("Courier New", 10, "bold")).pack(pady=(8, 2))
-        tk.Label(f, text=f"Distrito: {self.distrito['nombre']}",
-                 bg=C_PANEL, fg=C_GRIS, font=fn).pack()
+        self.lbl_distrito = tk.Label(f, text=f"Distrito: {self.distrito['nombre']}",
+                                     bg=C_PANEL, fg=C_GRIS, font=fn)
+        self.lbl_distrito.pack()
 
-        # Estado de las APIs
+        # Estado de las APIs (dinámico — refleja la conexión real, no texto fijo)
         f_api = tk.Frame(f, bg=C_PANEL)
         f_api.pack(fill="x", padx=8, pady=(4, 0))
-        tk.Label(f_api, text="🗺 Mapas API: conectado", bg=C_PANEL, fg=C_VERDE,
-                 font=("Courier New", 7), anchor="w").pack(anchor="w")
-        tk.Label(f_api, text="🚦 Semáforos API: conectado", bg=C_PANEL, fg=C_VERDE,
-                 font=("Courier New", 7), anchor="w").pack(anchor="w")
-        tk.Label(f_api, text="🚗 Vehículos API: local:8001", bg=C_PANEL, fg=C_VERDE,
-                 font=("Courier New", 7), anchor="w").pack(anchor="w")
+        self.lbl_api_mapas = tk.Label(f_api, text="🗺 Mapas API: ...", bg=C_PANEL,
+                                      fg=C_AMAR, font=("Courier New", 7),
+                                      anchor="w", justify="left")
+        self.lbl_api_mapas.pack(anchor="w")
+        self.lbl_api_sem = tk.Label(f_api, text="🚦 Semáforos API: ...", bg=C_PANEL,
+                                    fg=C_AMAR, font=("Courier New", 7),
+                                    anchor="w", justify="left")
+        self.lbl_api_sem.pack(anchor="w")
+        self.lbl_api_veh = tk.Label(f_api, text="🚗 Vehículos API: ...", bg=C_PANEL,
+                                    fg=C_AMAR, font=("Courier New", 7),
+                                    anchor="w", justify="left")
+        self.lbl_api_veh.pack(anchor="w")
+        self._actualizar_estado_apis_panel()
+
+        self._sep(f)
+
+        # ── Selector de mapa/distrito ────────────────────────────────────────
+        tk.Label(f, text="MAPA / DISTRITO", bg=C_PANEL, fg=C_GRIS,
+                 font=ft).pack(anchor="w", padx=10)
+        claves_disponibles = [d.get("clave") for d in self._distritos_raw if d.get("clave")]
+        if not claves_disponibles:
+            claves_disponibles = [self.distrito["clave"]]
+        self.var_mapa = tk.StringVar(value=self.distrito["clave"])
+        self.combo_mapas = ttk.Combobox(
+            f, textvariable=self.var_mapa, values=claves_disponibles,
+            state="readonly", width=28, font=fn
+        )
+        self.combo_mapas.pack(padx=8, pady=3, fill="x")
+        tk.Button(f, text="🗺 CAMBIAR MAPA", bg="#2a1a00", fg="#ffaa33", font=ft,
+                  relief="flat", cursor="hand2",
+                  command=self._btn_cambiar_mapa).pack(padx=8, pady=3, fill="x")
 
         self._sep(f)
 
@@ -364,10 +539,34 @@ class SimulacionApp:
                   command=lambda: threading.Thread(
                       target=self._refrescar_semaforos_bg, daemon=True).start()
                   ).pack(padx=8, pady=3, fill="x")
+        tk.Button(f, text="＋ COMPLETAR SEMÁFOROS", bg="#1a2200", fg="#ccff33", font=ft,
+                  relief="flat", cursor="hand2",
+                  command=self._btn_completar_semaforos
+                  ).pack(padx=8, pady=3, fill="x")
 
     def _sep(self, f):
         s = tk.Frame(f, bg=C_BORDE, height=1)
         s.pack(fill="x", padx=8, pady=4)
+
+    def _actualizar_estado_apis_panel(self):
+        """Refleja en el panel el estado REAL de cada API, no un texto fijo."""
+        if getattr(self, "distrito", None):
+            self.lbl_api_mapas.config(
+                text=f"🗺 Mapas API: conectado ({self.distrito['clave']})",
+                fg=C_VERDE)
+        if getattr(self, "semaforos_son_reales", False):
+            n = len(self.semaforos_remotos)
+            self.lbl_api_sem.config(text=f"🚦 Semáforos API: conectado ({n})", fg=C_VERDE)
+        else:
+            n = len(getattr(self, "semaforos_remotos", []))
+            self.lbl_api_sem.config(
+                text=f"🚦 Semáforos: sin datos para\n"
+                     f"   '{self.distrito['clave']}' — {n} locales",
+                fg=C_AMAR)
+        if getattr(self, "flota_bd", None):
+            self.lbl_api_veh.config(text=f"🚗 Vehículos API: OK ({len(self.flota_bd)})", fg=C_VERDE)
+        else:
+            self.lbl_api_veh.config(text="🚗 Vehículos API: usando CSV local", fg=C_AMAR)
 
     def _actualizar_combo_vehiculos(self):
         tipo_filtro = self.var_tipo.get()
@@ -424,6 +623,83 @@ class SimulacionApp:
         self.veh_seleccionado = None
         self._actualizar_combo_vehiculos()
         self._actualizar_lista_panel()
+
+    def _btn_completar_semaforos(self):
+        """
+        Botón independiente de la API: completa localmente los semáforos
+        que falten en cualquier intersección del mapa, sin depender de
+        que la API del compañero mande más datos. Si la API vuelve a dar
+        todos los semáforos en el futuro, este botón simplemente no
+        encontrará huecos que rellenar.
+        """
+        antes = len(self.semaforos_remotos)
+        self.semaforos_remotos = _completar_semaforos(self.semaforos_remotos, self.distrito)
+        agregados = len(self.semaforos_remotos) - antes
+        if agregados > 0:
+            messagebox.showinfo(
+                "Semáforos completados",
+                f"Se agregaron {agregados} semáforos locales "
+                f"para cubrir todas las intersecciones."
+            )
+        else:
+            messagebox.showinfo(
+                "Sin cambios",
+                "Todas las intersecciones ya tienen semáforo."
+            )
+
+    def _btn_cambiar_mapa(self):
+        """
+        Cambia el distrito activo de la simulación a partir de la clave
+        elegida en el combobox. La API de mapas expone varios distritos
+        (oeste, sur, este, centro, nuevo58, sdsadsa, etc.) — este botón
+        permite recorrerlos todos sin reiniciar el programa.
+        """
+        nueva_clave = self.var_mapa.get()
+        if not nueva_clave or nueva_clave == self.distrito["clave"]:
+            return
+
+        crudo = next((d for d in self._distritos_raw if d.get("clave") == nueva_clave), None)
+        if crudo is None:
+            messagebox.showerror("Distrito no encontrado",
+                                 f"No se encontró geometría para '{nueva_clave}'.")
+            return
+
+        # 1) Normalizar el nuevo distrito y reconstruir carriles
+        self.distrito = normalizar_distrito(crudo)
+        self.carriles = construir_carriles(self.distrito)
+
+        # 2) Redimensionar ventana/canvas al tamaño real del nuevo mapa
+        nuevo_w = self.distrito["width"]
+        nuevo_h = self.distrito["height"]
+        total_h = max(nuevo_h, MIN_WINDOW_H)
+        self.root.geometry(f"{nuevo_w + PANEL_W}x{total_h}")
+        self.root.minsize(nuevo_w + PANEL_W, 500)
+        self.frame_mapa.configure(width=nuevo_w, height=nuevo_h)
+        self.canvas.configure(width=nuevo_w, height=nuevo_h)
+        self.root.title(
+            f"Sistema MAS — {self.distrito['nombre']}  |  Agente Vehículo "
+            f"(Mapas + Semáforos + Vehículos vía API)"
+        )
+        self.lbl_distrito.config(text=f"Distrito: {self.distrito['nombre']}")
+
+        # 3) Limpiar vehículos del mapa anterior (sus coordenadas no
+        # tienen sentido en la geometría del nuevo distrito) y re-spawnear
+        # algunos de partida, igual que al iniciar el programa.
+        self.vehiculos_mapa.clear()
+        self.veh_seleccionado = None
+        self._actualizar_lista_panel()
+        self._agregar_vehiculo_inicial("Automóvil")
+        self._agregar_vehiculo_inicial("Bus")
+        self._agregar_vehiculo_inicial("Motocicleta")
+
+        # 4) Semáforos: usar un fallback local inmediato para no dejar el
+        # mapa sin semáforos mientras se consulta la API en un hilo aparte.
+        self.semaforos_remotos    = generar_semaforos_fallback(self.distrito)
+        self.semaforos_son_reales = False
+        threading.Thread(target=self._refrescar_semaforos_bg, daemon=True).start()
+
+        self._actualizar_estado_apis_panel()
+        messagebox.showinfo("Mapa cambiado", f"Ahora estás en: {self.distrito['nombre']}")
 
     def _tomar_control(self, veh: VehiculoAgente):
         self._desseleccionar_todos()
@@ -589,10 +865,23 @@ class SimulacionApp:
 
         self._refrescar_semaforos_si_corresponde(now)
 
+        # Extrapola el color de cada semáforo (real o local) según el
+        # tiempo transcurrido desde su última ancla conocida — esto es
+        # lo que hace que cambien de color en vivo tick a tick, en vez
+        # de quedar congelados con el snapshot del último fetch/refresco.
+        actualizar_ciclo_semaforos(self.semaforos_remotos)
+
         for veh in self.vehiculos_mapa:
             if veh.controlado_usuario:
                 veh.procesar_teclas(self.teclas_activas)
-            veh.actualizar(self.semaforos_remotos)
+            # Le pasamos la lista de los DEMÁS vehículos activos para que
+            # cada uno pueda detectar si tiene otro coche adelante en su
+            # mismo carril y frenar a tiempo (anti-colisión).
+            otros = [v for v in self.vehiculos_mapa if v is not veh]
+            veh.actualizar(self.semaforos_remotos, otros)
+
+        if self.tick % 30 == 0:   # refrescar etiquetas de estado ~2 veces/seg
+            self._actualizar_estado_apis_panel()
 
         self._render()
         self.tick += 1

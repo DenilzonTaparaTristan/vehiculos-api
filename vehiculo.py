@@ -19,6 +19,7 @@ import math
 import random
 import time
 import requests
+from datetime import datetime, timezone
 from typing import Optional, Dict, List, Tuple
 
 
@@ -39,8 +40,40 @@ import os as _os
 API_VEHICULOS_BASE = _os.environ.get("VEHICULOS_API_URL", "http://127.0.0.1:8001")
 API_VEHICULOS_URL   = f"{API_VEHICULOS_BASE}/api/vehiculos"
 
-TIMEOUT_API   = 6          # segundos de espera (Render puede tardar en "despertar")
-MAX_VEHICULOS_MAPA = 10
+TIMEOUT_POR_INTENTO = 30    # segundos de espera por cada intento individual
+MAX_REINTENTOS      = 4     # total: hasta 4×30 = 120s (2 min) esperando a Render
+TIMEOUT_API_LOCAL   = 2     # API local: si no responde en 2s no está corriendo
+MAX_VEHICULOS_MAPA  = 10
+
+# Flag para no repetir el mismo aviso de semáforos en consola indefinidamente
+_sem_aviso_logueado = False
+
+
+def _get_con_reintentos(url: str, desc: str = "") -> "requests.Response | None":
+    """
+    Hace GET a 'url' con reintentos automáticos.
+    Render free tier puede tardar hasta 120s en despertar si estaba inactivo:
+    espera hasta MAX_REINTENTOS × TIMEOUT_POR_INTENTO segundos en total,
+    imprimiendo un mensaje de progreso en cada intento fallido.
+    Devuelve el Response si tuvo éxito, o None si agotó los reintentos.
+    """
+    for intento in range(1, MAX_REINTENTOS + 1):
+        try:
+            print(f"[{desc}] Intento {intento}/{MAX_REINTENTOS} — conectando...")
+            r = requests.get(url, timeout=TIMEOUT_POR_INTENTO)
+            if r.status_code == 200:
+                print(f"[{desc}] ✓ Conectado (intento {intento})")
+                return r
+            else:
+                print(f"[{desc}] HTTP {r.status_code} en intento {intento}")
+        except Exception as e:
+            tipo = type(e).__name__
+            restantes = MAX_REINTENTOS - intento
+            if restantes > 0:
+                print(f"[{desc}] Intento {intento} fallido ({tipo}). Reintentando...")
+            else:
+                print(f"[{desc}] Intento {intento} fallido ({tipo}). Sin más intentos.")
+    return None
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -130,39 +163,86 @@ PLANO_FALLBACK = {
 # ════════════════════════════════════════════════════════════════════════════
 def cargar_mapas_api() -> List[dict]:
     """
-    Consulta GET /api/mapas. Devuelve la lista de distritos.
-    Cada distrito viene con su geometría dentro de 'config'.
-    Si falla, devuelve [PLANO_FALLBACK].
+    Consulta GET /api/mapas con reintentos automáticos.
+    Espera hasta MAX_REINTENTOS × TIMEOUT_POR_INTENTO segundos (120s).
+    Solo usa el plano de respaldo si agotó TODOS los reintentos sin respuesta.
     """
-    try:
-        r = requests.get(API_MAPAS_URL, timeout=TIMEOUT_API)
-        if r.status_code == 200:
-            datos = r.json()
-            print(f"[API Mapas] {len(datos)} distritos recibidos")
-            return datos
-    except Exception as e:
-        print(f"[API Mapas] No disponible ({e}). Usando plano de respaldo.")
+    r = _get_con_reintentos(API_MAPAS_URL, "API Mapas")
+    if r is not None:
+        datos = r.json()
+        # Filtrar entradas sin geometría real ("string" de prueba, entradas vacías)
+        validos = [
+            d for d in datos
+            if isinstance(d, dict) and d.get("clave") and d.get("clave") != "string"
+        ]
+        if validos:
+            print(f"[API Mapas] {len(validos)} distritos válidos: {[d['clave'] for d in validos]}")
+            return validos
+        print("[API Mapas] La API respondió pero sin distritos válidos. Usando respaldo.")
+    else:
+        print("[API Mapas] ✗ No se pudo conectar tras todos los reintentos. Usando respaldo.")
     return [PLANO_FALLBACK]
+
+
+def _es_avenida_valida(av: dict) -> bool:
+    """True si el dict tiene las claves reales de geometría (no 'additionalProp1' de prueba)."""
+    return isinstance(av, dict) and ("y" in av or "x" in av)
 
 
 def normalizar_distrito(distrito_raw: dict) -> dict:
     """
     La API de mapas anida la geometría dentro de 'config'.
-    Esta función la "aplana" a la forma que usa nuestro motor de carriles:
-    {width, height, avenidas_horizontales, avenidas_verticales, intersecciones, casas_config}
+    Estructura REAL de la API (verificada contra datos reales):
+      - distrito_raw["clave"], ["nombre"], ["color_tema"]
+      - distrito_raw["width"], ["height"]  ← en la RAÍZ, no en config
+      - distrito_raw["config"]["avenidas_horizontales"]  → [{y, x_ini, x_fin}, ...]
+      - distrito_raw["config"]["avenidas_verticales"]    → [{x, y_ini, y_fin}, ...]
+      - distrito_raw["config"]["intersecciones"]         → [{pos:[x,y], nombre}, ...]
+      - distrito_raw["config"]["casas_config"]           → {rango_x, rango_y} o {cuadras:[]}
+
+    La entrada 'string' de prueba tiene 'additionalProp1' en lugar de 'y'/'x';
+    se filtra aquí para que no rompa el motor de carriles.
     """
     cfg = distrito_raw.get("config", distrito_raw)
+
+    # Filtrar solo avenidas con geometría real (excluir additionalProp1)
+    av_h_raw = cfg.get("avenidas_horizontales", [])
+    av_v_raw = cfg.get("avenidas_verticales",   [])
+    av_h = [a for a in av_h_raw if _es_avenida_valida(a)]
+    av_v = [a for a in av_v_raw if _es_avenida_valida(a)]
+
+    # Si después de filtrar no queda geometría real, usar plano de respaldo
+    if not av_h or not av_v:
+        av_h          = PLANO_FALLBACK["avenidas_horizontales"]
+        av_v          = PLANO_FALLBACK["avenidas_verticales"]
+        intersecciones = PLANO_FALLBACK["intersecciones"]
+        casas          = PLANO_FALLBACK.get("casas_config", {"rango_x": [], "rango_y": []})
+    else:
+        intersecciones_raw = cfg.get("intersecciones", [])
+        # Filtrar intersecciones válidas (deben tener "pos" con 2 coords)
+        intersecciones = [
+            i for i in intersecciones_raw
+            if isinstance(i, dict) and isinstance(i.get("pos"), list) and len(i["pos"]) == 2
+        ]
+        if not intersecciones:
+            intersecciones = PLANO_FALLBACK["intersecciones"]
+        casas = cfg.get("casas_config", {"rango_x": [], "rango_y": []})
+        if not isinstance(casas, dict):
+            casas = {"rango_x": [], "rango_y": []}
+
+    # width/height están en la RAÍZ del objeto (no dentro de config)
     return {
-        "clave":      distrito_raw.get("clave", "centro"),
-        "nombre":     distrito_raw.get("nombre", "DISTRITO"),
-        "color_tema": distrito_raw.get("color_tema", "#00f0ff"),
-        "width":      distrito_raw.get("width", 800),
-        "height":     distrito_raw.get("height", 800),
-        "avenidas_horizontales": cfg.get("avenidas_horizontales", []),
-        "avenidas_verticales":   cfg.get("avenidas_verticales", []),
-        "intersecciones":        cfg.get("intersecciones", []),
-        "casas_config":          cfg.get("casas_config", {"rango_x": [], "rango_y": []}),
-        "curvas":                cfg.get("curvas", []),
+        "clave":                 distrito_raw.get("clave",  "centro"),
+        "nombre":                distrito_raw.get("nombre", "CENTRO METROPOLITANO"),
+        "color_tema":            distrito_raw.get("color_tema", "#00f0ff"),
+        "width":                 int(distrito_raw.get("width",  800)),
+        "height":                int(distrito_raw.get("height", 800)),
+        "avenidas_horizontales": av_h,
+        "avenidas_verticales":   av_v,
+        "intersecciones":        intersecciones,
+        "casas_config":          casas,
+        "curvas":                [c for c in cfg.get("curvas", []) if isinstance(c, dict) and "R" in c],
+        "nombres_avenidas":      cfg.get("nombres_avenidas", {}),
     }
 
 
@@ -182,23 +262,242 @@ def obtener_distrito(clave: str = "centro") -> dict:
 # ════════════════════════════════════════════════════════════════════════════
 #  CLIENTE DE LA API DE SEMÁFOROS (compañero de Semáforos)
 # ════════════════════════════════════════════════════════════════════════════
-def cargar_semaforos_api(mapa_clave: str = "centro") -> List[dict]:
+def _fijar_anclas_semaforos(semaforos: List[dict]) -> List[dict]:
     """
-    Consulta GET /api/semaforos y filtra solo los del distrito actual.
-    Formato real de cada registro:
-      {mapa_clave, interseccion_id, pos_x, pos_y, direccion, estado,
-       tiempo_verde, tiempo_amarillo, tiempo_rojo, activo, modo, id}
-    direccion puede ser: NS, SN, EO, OE
+    Guarda, para cada semáforo, el estado y el instante ('ancla') en que
+    ese estado era válido. A partir de esa ancla se puede extrapolar el
+    color correcto en cualquier momento posterior sin volver a golpear
+    la API — esto es lo que permite que los semáforos CAMBIEN DE COLOR
+    en vivo, en vez de quedar congelados con el snapshot del momento en
+    que se cargaron. Se llama automáticamente al construir cualquier
+    lista de semáforos (locales o de la API).
     """
-    try:
-        r = requests.get(API_SEMAFOROS_URL, timeout=TIMEOUT_API)
-        if r.status_code == 200:
-            todos = r.json()
-            filtrados = [s for s in todos if s.get("mapa_clave") == mapa_clave]
-            print(f"[API Semáforos] {len(filtrados)} semáforos en '{mapa_clave}'")
-            return filtrados
-    except Exception as e:
-        print(f"[API Semáforos] No disponible ({e}). Sin semáforos remotos.")
+    for s in semaforos:
+        s["_estado_ancla"] = s.get("estado", "rojo")
+        ts_ancla = None
+        ua = s.get("updated_at")
+        if ua:
+            try:
+                ts_ancla = datetime.fromisoformat(str(ua).replace("Z", "+00:00")).timestamp()
+            except Exception:
+                ts_ancla = None
+        s["_ts_ancla"] = ts_ancla if ts_ancla is not None else time.time()
+    return semaforos
+
+
+def actualizar_ciclo_semaforos(semaforos: List[dict]) -> None:
+    """
+    Recalcula 'estado' de CADA semáforo en vivo, extrapolando desde su
+    ancla (estado + timestamp conocidos) usando sus propias duraciones
+    de fase (tiempo_verde / tiempo_amarillo / tiempo_rojo). Se debe
+    llamar en cada tick de la simulación para que los semáforos —tanto
+    los reales de la API como los locales de respaldo— avancen de color
+    con el paso del tiempo en vez de quedar congelados.
+    """
+    ahora_ts = time.time()
+    orden = ["verde", "amarillo", "rojo"]
+    for s in semaforos:
+        estado_ancla = s.get("_estado_ancla")
+        ts_ancla = s.get("_ts_ancla")
+        if estado_ancla not in orden or ts_ancla is None:
+            continue   # semáforo sin ancla válida (no debería pasar) -> se deja como está
+
+        duraciones = {
+            "verde":    max(1, int(s.get("tiempo_verde", 10) or 10)),
+            "amarillo": max(1, int(s.get("tiempo_amarillo", 5) or 5)),
+            "rojo":     max(1, int(s.get("tiempo_rojo", 10) or 10)),
+        }
+        transcurrido = ahora_ts - ts_ancla
+        if transcurrido < 0:
+            s["estado"] = estado_ancla
+            continue
+
+        idx = orden.index(estado_ancla)
+        restante = transcurrido
+        # Avanza fase por fase hasta ubicar en cuál está "ahora mismo"
+        while restante >= duraciones[orden[idx]]:
+            restante -= duraciones[orden[idx]]
+            idx = (idx + 1) % 3
+        s["estado"] = orden[idx]
+
+
+def generar_semaforos_fallback(distrito: dict, momento: Optional[float] = None) -> List[dict]:
+    """
+    Genera semáforos LOCALES de respaldo, uno por cada dirección
+    (NS, SN, EO, OE) en cada intersección del distrito.
+    Se usa cuando la API remota de semáforos no tiene datos para
+    el 'mapa_clave' actual (por ejemplo, porque el compañero todavía
+    no pobló ese distrito, o el dato fue borrado/reiniciado).
+    Cada semáforo alterna fases igual que en el modelo real:
+    verde 10s, amarillo 5s, rojo 10s — con un 'ancla' (updated_at) para
+    que su color siga avanzando en vivo tick a tick (ver
+    actualizar_ciclo_semaforos), no solo en el instante de creación.
+
+    'momento': permite pasar un timestamp fijo (en vez de time.time() real)
+    para pruebas reproducibles. En producción se deja en None y usa el
+    reloj real del sistema.
+    """
+    ahora = momento if momento is not None else time.time()
+    ahora_iso = datetime.fromtimestamp(ahora, tz=timezone.utc).isoformat()
+    fallback = []
+    for idx, nodo in enumerate(distrito.get("intersecciones", [])):
+        nx, ny = nodo["pos"]
+        ciclo = (ahora + idx * 4) % 25
+        fase_ns = "verde" if ciclo < 10 else ("amarillo" if ciclo < 15 else "rojo")
+        fase_eo = "rojo"  if ciclo < 10 else ("amarillo" if ciclo < 15 else "verde")
+        for direccion, estado in [("NS", fase_ns), ("SN", fase_ns),
+                                   ("EO", fase_eo), ("OE", fase_eo)]:
+            fallback.append({
+                "mapa_clave": distrito.get("clave", "centro"),
+                "interseccion_id": f"fallback-{idx}-{nx}-{ny}",
+                "interseccion_nombre": nodo.get("nombre", f"NODO {idx}"),
+                "pos_x": nx, "pos_y": ny,
+                "direccion": direccion, "estado": estado,
+                "tiempo_verde": 10, "tiempo_amarillo": 5, "tiempo_rojo": 10,
+                "activo": True, "modo": "fallback_local", "id": -1,
+                "updated_at": ahora_iso,
+            })
+    return _fijar_anclas_semaforos(fallback)
+
+
+def _adaptar_semaforos_a_distrito(semaforos: List[dict], distrito: dict) -> List[dict]:
+    """
+    Los semáforos de la API tienen coordenadas de su propio distrito
+    (ej. 'oeste': pos_x=250, pos_y=250/550).
+    Cuando los usamos en un distrito distinto (ej. 'centro' con
+    intersecciones en 250,250 / 520,250 / 250,540 / 520,540), necesitamos
+    reasignar cada semáforo a la intersección más cercana del distrito activo,
+    para que se dibujen en el lugar correcto del mapa.
+
+    La dirección (NS/SN/EO/OE) se mantiene igual porque es independiente
+    de las coordenadas — solo las posiciones x/y se ajustan.
+    """
+    intersecciones = distrito.get("intersecciones", [])
+    if not intersecciones:
+        return semaforos
+
+    # Calcular intersecciones únicas del distrito destino
+    nodos_destino = [(n["pos"][0], n["pos"][1]) for n in intersecciones]
+
+    def nodo_mas_cercano(px, py):
+        return min(nodos_destino, key=lambda n: (n[0]-px)**2 + (n[1]-py)**2)
+
+    # Grupo por (pos_x, pos_y) original → reasignar al nodo más cercano
+    resultado = []
+    clave_dest = distrito.get("clave", "centro")
+    for sem in semaforos:
+        nx, ny = nodo_mas_cercano(sem.get("pos_x", 0), sem.get("pos_y", 0))
+        nuevo = dict(sem)    # copia para no mutar el original
+        nuevo["pos_x"]     = nx
+        nuevo["pos_y"]     = ny
+        nuevo["mapa_clave"] = clave_dest
+        resultado.append(nuevo)
+    return _fijar_anclas_semaforos(resultado)
+
+
+def _completar_semaforos(semaforos_api: List[dict], distrito: dict) -> List[dict]:
+    """
+    La API puede devolver semáforos incompletos (ej. solo 1 de 4 intersecciones).
+    Esta función detecta qué intersecciones del distrito NO tienen semáforo
+    y genera semáforos locales solo para esas, complementando los reales de la API.
+    Así siempre hay semáforos en TODAS las intersecciones del mapa.
+    """
+    intersecciones = distrito.get("intersecciones", [])
+    if not intersecciones:
+        return semaforos_api
+
+    # Posiciones que ya tienen semáforo de la API
+    pos_con_sem = set(
+        (s.get("pos_x"), s.get("pos_y")) for s in semaforos_api
+    )
+
+    # Generar semáforos locales solo para intersecciones sin cobertura
+    ahora = time.time()
+    faltantes = []
+    idx_faltante = 0
+    for nodo in intersecciones:
+        nx, ny = nodo["pos"]
+        if (nx, ny) not in pos_con_sem:
+            ciclo = (ahora + idx_faltante * 4) % 25
+            fase_ns = "verde" if ciclo < 10 else ("amarillo" if ciclo < 15 else "rojo")
+            fase_eo = "rojo"  if ciclo < 10 else ("amarillo" if ciclo < 15 else "verde")
+            ahora_iso = datetime.fromtimestamp(ahora, tz=timezone.utc).isoformat()
+            for direccion, estado in [("NS", fase_ns), ("SN", fase_ns),
+                                       ("EO", fase_eo), ("OE", fase_eo)]:
+                faltantes.append({
+                    "mapa_clave":           distrito.get("clave", "centro"),
+                    "interseccion_id":      f"local-{nx}-{ny}",
+                    "interseccion_nombre":  nodo.get("nombre", ""),
+                    "pos_x": nx, "pos_y": ny,
+                    "direccion": direccion,
+                    "estado":    estado,
+                    "tiempo_verde": 10, "tiempo_amarillo": 5, "tiempo_rojo": 10,
+                    "activo": True, "modo": "local_completado", "id": -1,
+                    "updated_at": ahora_iso,
+                })
+            idx_faltante += 1
+    if faltantes:
+        print(f"[API Semáforos] Completando {len(faltantes)//4} intersecciones "
+              f"sin cobertura con semáforos locales.")
+    return _fijar_anclas_semaforos(semaforos_api + faltantes)
+
+
+def cargar_semaforos_api(mapa_clave: str = "centro", distrito: Optional[dict] = None) -> List[dict]:
+    """
+    Consulta GET /api/semaforos con reintentos automáticos.
+    Espera hasta MAX_REINTENTOS × TIMEOUT_POR_INTENTO segundos (120s).
+
+    Estrategia:
+    1. Usa semáforos del distrito exacto ('centro') si existen.
+    2. Si no, usa el primer distrito disponible y reposiciona sus semáforos.
+    3. En ambos casos, COMPLETA con semáforos locales las intersecciones
+       que la API no cubrió (la API puede tener datos parciales).
+    4. Si la API no responde, genera todos los semáforos localmente.
+    """
+    global _sem_aviso_logueado
+
+    r = _get_con_reintentos(API_SEMAFOROS_URL, "API Semáforos")
+    if r is not None:
+        todos = r.json()
+        if not isinstance(todos, list):
+            print("[API Semáforos] ✗ La respuesta no es una lista.")
+        else:
+            # Filtrar entradas inválidas de prueba
+            todos = [s for s in todos
+                     if isinstance(s, dict) and
+                     s.get("mapa_clave") not in ("string", None)]
+
+            # 1) Distrito exacto — se devuelve tal cual venga de la API,
+            # sin completar automáticamente (eso ahora es un botón manual
+            # en la UI: "COMPLETAR SEMÁFOROS", independiente de la API).
+            exactos = [s for s in todos if s.get("mapa_clave") == mapa_clave]
+            if exactos:
+                _sem_aviso_logueado = False
+                print(f"[API Semáforos] ✓ {len(exactos)} semáforos de API para '{mapa_clave}'")
+                return _fijar_anclas_semaforos(exactos)
+
+            # 2) Usar otro distrito y reubicar (sin completar automático)
+            claves = sorted(set(s.get("mapa_clave") for s in todos if s.get("mapa_clave")))
+            if claves:
+                clave_alt = claves[0]
+                sem_alt   = [s for s in todos if s.get("mapa_clave") == clave_alt]
+                adaptados = _adaptar_semaforos_a_distrito(sem_alt, distrito) if distrito else sem_alt
+                if not _sem_aviso_logueado:
+                    print(f"[API Semáforos] ✓ Usando '{clave_alt}' ({len(adaptados)} de API) "
+                          f"reposicionados en '{mapa_clave}'. Usa el botón "
+                          f"'COMPLETAR SEMÁFOROS' si faltan intersecciones.")
+                    _sem_aviso_logueado = True
+                return adaptados
+
+            print("[API Semáforos] API respondió pero sin semáforos válidos.")
+    else:
+        print("[API Semáforos] ✗ No se pudo conectar tras todos los reintentos.")
+
+    # Fallback total: todos los semáforos locales
+    if distrito:
+        sems_local = generar_semaforos_fallback(distrito)
+        print(f"[API Semáforos] Usando {len(sems_local)} semáforos locales.")
+        return sems_local
     return []
 
 
@@ -216,22 +515,32 @@ def semaforo_bloquea(direccion_movimiento: str, estado: str) -> bool:
 # ════════════════════════════════════════════════════════════════════════════
 def cargar_flota_api() -> List[dict]:
     """
-    Consulta GET /api/vehiculos (nuestra API local).
-    Si no está corriendo, hace fallback al CSV directo.
+    Consulta GET /api/vehiculos (nuestra API local en 127.0.0.1:8001).
+    Timeout corto (2s) porque es local: si no responde, no está corriendo.
+    Fallback al CSV directo para que la simulación siempre tenga vehículos.
     """
     try:
-        r = requests.get(API_VEHICULOS_URL, timeout=2)
+        print(f"[API Vehículos] Conectando con {API_VEHICULOS_URL}...")
+        r = requests.get(API_VEHICULOS_URL, timeout=TIMEOUT_API_LOCAL)
         if r.status_code == 200:
             datos = r.json()
-            print(f"[API Vehículos] {len(datos)} vehículos recibidos")
-            return datos
+            if datos:  # solo usar si devuelve algo
+                print(f"[API Vehículos] ✓ {len(datos)} vehículos recibidos")
+                return datos
+            print(f"[API Vehículos] API respondió vacía. Usando CSV.")
     except Exception as e:
-        print(f"[API Vehículos] No disponible ({e}). Leyendo CSV local...")
+        tipo = type(e).__name__
+        if "Connection" in tipo or "timeout" in str(e).lower():
+            print(f"[API Vehículos] ✗ api_vehiculos.py no está corriendo en {API_VEHICULOS_URL}.")
+            print(f"[API Vehículos]   → Abre otra terminal y ejecuta: python api_vehiculos.py")
+            print(f"[API Vehículos]   → Usando CSV directamente.")
+        else:
+            print(f"[API Vehículos] ✗ Error ({tipo}). Usando CSV.")
 
     import os, csv
-    base = os.path.dirname(os.path.abspath(__file__))
+    base     = os.path.dirname(os.path.abspath(__file__))
     csv_path = os.path.join(base, "vehiculos.csv")
-    flota = []
+    flota    = []
     if os.path.exists(csv_path):
         with open(csv_path, encoding="utf-8-sig") as f:
             reader = csv.DictReader(f, delimiter=";")
@@ -240,14 +549,19 @@ def cargar_flota_api() -> List[dict]:
                 color     = row["COLOR"].strip()
                 cfg       = TIPOS_VEHICULO.get(categoria, TIPOS_VEHICULO["Automóvil"])
                 flota.append({
-                    "id": int(row["ID"]), "placa": row["PLACA"].strip(),
-                    "color": color, "color_hex": MAPA_COLORES.get(color, "#808080"),
-                    "tamaño": row["TAMAÑO"].strip(), "usuario": row["USUARIO"].strip(),
-                    "chofer": row["CHOFER"].strip(), "licencia": row["LICENCIA"].strip(),
+                    "id":              int(row["ID"]),
+                    "placa":           row["PLACA"].strip(),
+                    "color":           color,
+                    "color_hex":       MAPA_COLORES.get(color, "#808080"),
+                    "tamaño":          row["TAMAÑO"].strip(),
+                    "usuario":         row["USUARIO"].strip(),
+                    "chofer":          row["CHOFER"].strip(),
+                    "licencia":        row["LICENCIA"].strip(),
                     "soat_vencimiento": row["SOAT VENC."].strip(),
-                    "categoria": categoria, "icono": cfg["icono"],
+                    "categoria":       categoria,
+                    "icono":           cfg["icono"],
                 })
-    print(f"[CSV] Flota cargada: {len(flota)} vehículos")
+    print(f"[CSV] ✓ Flota cargada: {len(flota)} vehículos")
     return flota
 
 
@@ -320,14 +634,51 @@ def construir_carriles(distrito: dict) -> List[CarrilVial]:
     return carriles
 
 
-def carril_inicio_aleatorio(carriles: List[CarrilVial], distrito: dict) -> Tuple[CarrilVial, float]:
+def carril_inicio_aleatorio(carriles: List[CarrilVial], distrito: dict,
+                             vehiculos_existentes: Optional[list] = None,
+                             intentos_max: int = 25) -> Tuple[CarrilVial, float]:
+    """
+    Elige un carril y posición inicial aleatoria válida.
+    Si se pasa 'vehiculos_existentes' (los VehiculoAgente ya activos en el
+    mapa), se evita colocar el nuevo vehículo solapado con alguno de ellos
+    — sin esto, dos vehículos podían nacer ya "chocados" desde el spawn,
+    lo que rompía la anti-colisión (que está pensada para frenar ante un
+    vehículo que se acerca, no para separar vehículos que ya nacen encima).
+    """
     if not carriles:
         return None, 0.0
-    c = random.choice(carriles)
-    margen = 60
-    lo = min(c.rango_ini, c.rango_fin) + margen
-    hi = max(c.rango_ini, c.rango_fin) - margen
-    pos = random.uniform(lo, hi) if hi > lo else (lo + hi) / 2
+
+    DIST_SEGURA_SPAWN = 70   # separación mínima al nacer, en px
+
+    for _ in range(intentos_max):
+        c = random.choice(carriles)
+        margen = 60
+        lo = min(c.rango_ini, c.rango_fin) + margen
+        hi = max(c.rango_ini, c.rango_fin) - margen
+        pos = random.uniform(lo, hi) if hi > lo else (lo + hi) / 2
+
+        if not vehiculos_existentes:
+            return c, pos
+
+        # Verificar que no quede demasiado cerca de ningún vehículo ya
+        # presente en el MISMO carril físico.
+        choque = False
+        for v in vehiculos_existentes:
+            oc = v.carril_actual
+            if oc.orient != c.orient:
+                continue
+            if abs(oc.coord_fija - c.coord_fija) > 4:
+                continue
+            otra_pos = v.x if c.orient == "H" else v.y
+            if abs(otra_pos - pos) < DIST_SEGURA_SPAWN:
+                choque = True
+                break
+        if not choque:
+            return c, pos
+
+    # Si tras varios intentos no se encontró hueco libre, se usa la última
+    # posición probada de todos modos (mejor spawnear con algo de riesgo
+    # que no spawnear nunca si el mapa está muy lleno).
     return c, pos
 
 
@@ -388,6 +739,16 @@ class VehiculoAgente:
         self.controlado_usuario = controlado_usuario
         self.frenando      = False
         self.bloqueado_sem = False
+        self.bloqueado_colision = False
+
+        # Watchdog anti-atasco: cuenta ticks consecutivos casi sin movimiento.
+        # Si un vehículo lleva demasiado tiempo detenido SIN estar bloqueado
+        # por colisión real (solo por ejemplo esperando semáforo desde una
+        # posición rara), se le permite un pequeño avance de cortesía para
+        # que nunca quede pegado de forma permanente en el mapa.
+        self._ticks_sin_mover = 0
+        self.TICKS_ATASCO_MAX = 240   # ~4 segundos a 60fps
+        self._inmune_semaforo_ticks = 0   # ticks restantes ignorando semáforos
 
         self._giro_izq = False
         self._giro_der = False
@@ -465,6 +826,13 @@ class VehiculoAgente:
         semaforos: lista de dicts con formato de la API real:
           {pos_x, pos_y, direccion, estado, ...}
         """
+        if self._inmune_semaforo_ticks > 0:
+            # Vehículo en ventana de inmunidad tras el watchdog anti-atasco:
+            # avanza libremente unos instantes para despegarse del punto
+            # donde quedó detenido, en vez de volver a frenar en el acto.
+            self.bloqueado_sem = False
+            return
+
         cfg = self.tipo_config
         c   = self.carril_actual
         cod = c.codigo_direccion   # "OE","EO","NS","SN"
@@ -487,8 +855,46 @@ class VehiculoAgente:
                     return
         self.bloqueado_sem = False
 
+    # ── cambio al carril de regreso al llegar al borde del mapa ──────────────
+    def _cambiar_a_carril_regreso(self):
+        """
+        Se ejecuta cuando el vehículo toca el borde físico del mapa.
+        Busca, dentro de la lista de carriles, el carril de la MISMA
+        avenida (mismo eje H o V, mismo coord_fija aproximado del lado
+        contrario) pero con sentido OPUESTO, y se cambia a él — exactamente
+        como si el vehículo diera la vuelta en la esquina de la cuadra y
+        retomara la circulación por el carril de regreso, en vez de quedar
+        congelado esperando una intersección que puede no existir en ese borde.
+        """
+        c = self.carril_actual
+        candidatos = [
+            carril for carril in self.carriles
+            if carril.orient == c.orient and carril.sentido == -c.sentido
+        ]
+        if not candidatos:
+            # No hay carril de regreso disponible (mapa con una sola vía):
+            # como último recurso, simplemente invierte el sentido lógico
+            # del propio carril para no quedar nunca parado sin salida.
+            self.vel = 0.3
+            return
+
+        # Elegir el carril de regreso más cercano en la otra coordenada
+        candidatos.sort(key=lambda k: abs(
+            (k.coord_fija - c.coord_fija) if c.orient == "H" else (k.coord_fija - c.coord_fija)
+        ))
+        nuevo = candidatos[0]
+        self.carril_actual = nuevo
+        if nuevo.orient == "H":
+            self.y = float(nuevo.coord_fija)
+        else:
+            self.x = float(nuevo.coord_fija)
+        self.angulo = self._angulo_carril(nuevo)
+        # Mantener algo de velocidad para que el vehículo siga circulando
+        # de inmediato, en vez de arrancar desde cero otra vez.
+        self.vel = max(0.6, abs(self.vel) * 0.6)
+
     # ── giro en intersección ─────────────────────────────────────────────────
-    def _intentar_giro(self):
+    def _intentar_giro(self, vehiculos_cercanos: Optional[list] = None):
         en_nodo, _ = en_interseccion(self.x, self.y, self.distrito)
         if not en_nodo or not (self._giro_izq or self._giro_der):
             return
@@ -522,6 +928,27 @@ class VehiculoAgente:
         if mejor is None:
             mejor = candidatos[0][1]
 
+        # ── Verificación de espacio antes de comprometerse al giro ──────────
+        # Si el carril destino ya tiene otro vehículo justo en el punto
+        # donde aterrizaría self, el giro se pospone (se mantiene la
+        # intención activa para reintentar el próximo tick) en vez de
+        # ejecutarse y depender de que el clamp resuelva un solapamiento
+        # ya consumado. Esto evita el caso límite de 3+ vehículos muy
+        # juntos donde no hay espacio matemáticamente suficiente.
+        if vehiculos_cercanos:
+            destino = self.x if mejor.orient == "V" else self.y
+            for v in vehiculos_cercanos:
+                if v is self:
+                    continue
+                oc = v.carril_actual
+                if oc is not mejor and not (oc.orient == mejor.orient and
+                                            oc.sentido == mejor.sentido and
+                                            abs(oc.coord_fija - mejor.coord_fija) <= 4):
+                    continue
+                pos_v = v.x if mejor.orient == "V" else v.y
+                if abs(pos_v - destino) < (self.largo / 2 + v.largo / 2):
+                    return   # sin espacio: no gira este tick, reintenta luego
+
         self.carril_actual = mejor
         if mejor.orient == "V":
             self.x = float(mejor.coord_fija)
@@ -532,17 +959,55 @@ class VehiculoAgente:
         self._giro_izq = self._giro_der = False
 
     # ── física principal ─────────────────────────────────────────────────────
-    def actualizar(self, semaforos: List[dict]):
+    def actualizar(self, semaforos: List[dict], vehiculos_cercanos: Optional[list] = None):
+        """
+        vehiculos_cercanos: lista de los OTROS VehiculoAgente activos en el mapa.
+        Se usa para anti-colisión: si hay otro vehículo adelante, en el mismo
+        carril, dentro de la distancia de seguridad, este vehículo frena.
+        """
         cfg = self.tipo_config
         if not self.controlado_usuario:
             self._ia_npc()
 
+        if self._inmune_semaforo_ticks > 0:
+            self._inmune_semaforo_ticks -= 1
+
         self.verificar_semaforo(semaforos)
-        if self.bloqueado_sem and self.vel > 0:
-            self.vel = max(0.0, self.vel - cfg["frenado"] * 1.8)
+
+        # ── Anti-colisión: detectar vehículo adelante en el mismo carril ────
+        self.bloqueado_colision = False
+        if vehiculos_cercanos:
+            self._verificar_colision(vehiculos_cercanos)
+
+        bloqueo_total = self.bloqueado_sem or self.bloqueado_colision
+        if bloqueo_total and self.vel > 0:
+            factor_frenado = cfg["frenado"] * (2.2 if self.bloqueado_colision else 1.8)
+            self.vel = max(0.0, self.vel - factor_frenado)
             self.frenando = True
         else:
-            self.frenando = self.bloqueado_sem
+            self.frenando = bloqueo_total
+
+        # ── Watchdog anti-atasco ─────────────────────────────────────────────
+        # Solo cuenta como "atascado" si está casi sin moverse Y NO es por
+        # colisión real con otro vehículo (eso sí debe respetarse siempre,
+        # o causaríamos choques). Si el bloqueo es por semáforo en un punto
+        # donde igual no hay riesgo de colisión, se permite avance de cortesía.
+        if abs(self.vel) < 0.05 and not self.bloqueado_colision:
+            self._ticks_sin_mover += 1
+        else:
+            self._ticks_sin_mover = 0
+
+        if self._ticks_sin_mover > self.TICKS_ATASCO_MAX:
+            self.vel = max(self.vel, 0.5)
+            self.bloqueado_sem = False
+            self._ticks_sin_mover = 0
+            # Ventana de ~120 ticks (≈2s a 60fps) donde el vehículo ignora
+            # semáforos para alejarse del punto de atasco. La distancia de
+            # seguridad con otros vehículos (bloqueado_colision) NUNCA se
+            # desactiva aquí, así que esto no provoca choques — solo libera
+            # atascos por semáforo cuando el vehículo quedó detenido
+            # demasiado tiempo en un punto sin riesgo de colisión real.
+            self._inmune_semaforo_ticks = 120
 
         if self.vel > 0:
             self.vel = max(0.0, self.vel - cfg["friccion"])
@@ -550,7 +1015,7 @@ class VehiculoAgente:
             self.vel = min(0.0, self.vel + cfg["friccion"])
         self.vel = max(-cfg["vel_max_rev"], min(cfg["vel_max"], self.vel))
 
-        self._intentar_giro()
+        self._intentar_giro(vehiculos_cercanos)
 
         c = self.carril_actual
         ds = self.vel * c.sentido
@@ -560,11 +1025,35 @@ class VehiculoAgente:
         else:
             self.y += ds; self.x = float(c.coord_fija)
 
+        # ── Límite del mapa: cuando un vehículo llega al final físico de su
+        # carril (el extremo del mapa, no necesariamente una intersección),
+        # NO existe forma de seguir avanzando en ese mismo carril porque cada
+        # carril tiene un único sentido fijo. La solución correcta es
+        # cambiarlo al carril de regreso de la MISMA avenida (mismo eje,
+        # sentido opuesto), simulando que da la vuelta en la cuadra y
+        # continúa circulando — así nunca queda atascado esperando una
+        # intersección que puede no estar cerca de ese borde.
         m = 12
-        if self.x < m:        self.x = m;        self.vel *= -0.3
-        if self.x > self.W-m: self.x = self.W-m; self.vel *= -0.3
-        if self.y < m:        self.y = m;        self.vel *= -0.3
-        if self.y > self.H-m: self.y = self.H-m; self.vel *= -0.3
+        tocando_borde = False
+        if self.x < m:        self.x = m;        tocando_borde = True
+        if self.x > self.W-m: self.x = self.W-m; tocando_borde = True
+        if self.y < m:        self.y = m;        tocando_borde = True
+        if self.y > self.H-m: self.y = self.H-m; tocando_borde = True
+
+        if tocando_borde:
+            self._cambiar_a_carril_regreso()
+
+        # ── Clamp físico duro anti-solapamiento ──────────────────────────────
+        # Se aplica DESPUÉS de cualquier cambio de carril (giro en
+        # intersección o cambio al carril de regreso en el borde), porque
+        # esos "snaps" de posición pueden colocar al vehículo directamente
+        # encima de otro que ya esté en el carril destino. El frenado
+        # gradual no es suficiente garantía por sí solo — sobre todo con
+        # vehículos grandes (Bus/Camioneta) cuyo frenado es lento — así que
+        # esta es la última línea de defensa: recorta la posición para que
+        # la carrocería NUNCA quede dentro de otro vehículo del mismo carril.
+        if vehiculos_cercanos:
+            self._aplicar_clamp_anticolision(vehiculos_cercanos)
 
         ang_obj = self._angulo_carril(c)
         diff = (ang_obj - self.angulo + 180) % 360 - 180
@@ -577,6 +1066,137 @@ class VehiculoAgente:
         self.historial.append((int(self.x), int(self.y)))
         if len(self.historial) > self.MAX_HIST:
             self.historial.pop(0)
+
+    def _aplicar_clamp_anticolision(self, vehiculos_cercanos: list):
+        """
+        Recorta la posición para que nunca penetre la carrocería de otro
+        vehículo del mismo carril. Cubre tanto el caso normal (vehículo
+        adelante, mismo sentido de avance) como el caso de un "snap" de
+        giro o cambio de carril que coloca al vehículo prácticamente
+        encima de otro ya presente.
+
+        Cuando hay VARIOS vehículos en el mismo carril, no basta con
+        corregir contra el primero que se encuentre: tras corregir, el
+        vehículo podría seguir solapado con otro distinto (esto pasaba con
+        3+ vehículos muy juntos en el mismo carril tras un giro). Por eso
+        se repite la verificación varias veces, resolviendo en cada pasada
+        el solapamiento más severo, hasta quedar libre de conflictos o
+        agotar los intentos.
+        """
+        c = self.carril_actual
+        mismo_carril = [
+            v for v in vehiculos_cercanos
+            if v is not self
+            and v.carril_actual.orient == c.orient
+            and v.carril_actual.sentido == c.sentido
+            and abs(v.carril_actual.coord_fija - c.coord_fija) <= 4
+        ]
+        if not mismo_carril:
+            return
+
+        # Resolución determinista: se prioriza siempre el vehículo que está
+        # ADELANTE en el sentido de avance del carril. Esto evita un
+        # ciclo de "ping-pong" que podía ocurrir cuando dos vehículos a la
+        # vez no dejaban espacio matemáticamente suficiente para encajar
+        # a self entre ambos (por ejemplo, tres vehículos muy juntos justo
+        # tras un giro) — intentar satisfacer ambas restricciones a la vez
+        # en esos casos es imposible, así que se resuelve siempre contra
+        # el más relevante (el de adelante) y se acepta, como último
+        # recurso en ese escenario límite, un pequeño solape residual con
+        # el de atrás antes que oscilar sin converger.
+        propia = self.x if c.orient == "H" else self.y
+
+        def en_frente(v):
+            ajena = v.x if c.orient == "H" else v.y
+            return (ajena - propia) * c.sentido >= 0
+
+        candidatos_frente = [v for v in mismo_carril if en_frente(v)]
+        candidatos_atras  = [v for v in mismo_carril if not en_frente(v)]
+
+        def distancia(v):
+            ajena = v.x if c.orient == "H" else v.y
+            return abs(ajena - propia)
+
+        objetivo = None
+        if candidatos_frente:
+            objetivo = min(candidatos_frente, key=distancia)
+        elif candidatos_atras:
+            objetivo = min(candidatos_atras, key=distancia)
+        if objetivo is None:
+            return
+
+        min_gap = self.largo / 2 + objetivo.largo / 2
+        ajena = objetivo.x if c.orient == "H" else objetivo.y
+        diff = propia - ajena
+        if abs(diff) >= min_gap:
+            return   # sin solapamiento real con el vehículo prioritario
+        nueva = ajena + (min_gap if diff >= 0 else -min_gap)
+        if c.orient == "H":
+            self.x = nueva
+        else:
+            self.y = nueva
+        self.vel = 0.0
+
+    def _verificar_colision(self, vehiculos_cercanos: list):
+        """
+        Revisa si hay otro vehículo ADELANTE, en el MISMO carril (misma
+        orientación, mismo coord_fija aproximado, mismo sentido), dentro
+        de la distancia de seguridad. Si lo hay, marca bloqueado_colision.
+
+        La distancia de seguridad se calcula con la física real de frenado:
+        mitad de cada carrocería + un colchón fijo + la distancia que el
+        propio vehículo necesitaría para frenar del todo a su velocidad
+        actual (v² / (2·frenado)), que es lo que evita que dos vehículos
+        terminen solapados cuando van casi a la misma velocidad — un
+        margen que solo dependiera de 'vel*6' no escala correctamente con
+        la capacidad real de frenado de cada tipo (un Bus frena mucho más
+        lento que una Motocicleta, así que necesita más espacio).
+        """
+        c = self.carril_actual
+        cfg = self.tipo_config
+        for otro in vehiculos_cercanos:
+            if otro is self:
+                continue
+            oc = otro.carril_actual
+            if oc.orient != c.orient or oc.sentido != c.sentido:
+                continue
+            if abs(oc.coord_fija - c.coord_fija) > 4:
+                continue
+
+            if c.orient == "H":
+                dist_centros = (otro.x - self.x) * c.sentido
+            else:
+                dist_centros = (otro.y - self.y) * c.sentido
+
+            # Distancia real entre parachoques (no entre centros).
+            gap = dist_centros - (self.largo / 2 + otro.largo / 2)
+
+            # Margen de seguridad: un colchón fijo (espacio mínimo siempre
+            # presente, incluso con ambos vehículos detenidos) más un
+            # término proporcional a la propia velocidad (para frenar con
+            # antelación cuando se viaja rápido). A diferencia de un cálculo
+            # de "distancia de frenado pura" (vel²/2·frenado), que se
+            # reduce a casi 0 apenas el vehículo decelera un poco —
+            # permitiendo que seguidores lentos sigan "reptando" hacia un
+            # vehículo detenido adelante hasta solaparse — este margen
+            # nunca baja de COLCHON_MINIMO, así que dos vehículos jamás
+            # quedan a menos de esa distancia sin importar qué tan lento
+            # vaya cada uno.
+            COLCHON_MINIMO = 16
+            margen_por_velocidad = abs(self.vel) * 10
+            distancia_seguridad = COLCHON_MINIMO + margen_por_velocidad
+
+            if 0 <= gap < distancia_seguridad:
+                self.bloqueado_colision = True
+                return
+            # Si el gap ya es negativo (las carrocerías están solapadas por
+            # cualquier motivo, por ejemplo justo tras un giro), frenar
+            # SIEMPRE de inmediato sin importar la distancia de frenado.
+            if gap < 0:
+                self.bloqueado_colision = True
+                return
+                return
+
 
     # ════════════════════════════════════════════════════════════════════════
     #  DIBUJO (Tkinter)
