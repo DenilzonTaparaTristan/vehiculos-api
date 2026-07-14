@@ -44,15 +44,17 @@ from typing import Optional, List
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 
 # ════════════════════════════════════════════════════════════════════════════
 #  CONFIGURACIÓN
 # ════════════════════════════════════════════════════════════════════════════
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-CSV_PATH = os.path.join(BASE_DIR, "vehiculos.csv")
-DB_PATH  = os.path.join(BASE_DIR, "vehiculos.db")
+BASE_DIR       = os.path.dirname(os.path.abspath(__file__))
+CSV_PATH       = os.path.join(BASE_DIR, "vehiculos.csv")
+DB_PATH        = os.path.join(BASE_DIR, "vehiculos.db")
+DASHBOARD_PATH = os.path.join(BASE_DIR, "dashboard.html")
 
 PUERTO = int(os.environ.get("PORT", 8001))
 
@@ -550,10 +552,31 @@ def eliminar_vehiculo(id: int):
 
 
 # ════════════════════════════════════════════════════════════════════════════
-#  RAÍZ
+#  RAÍZ — Dashboard visual (como el panel de la API de Semáforos del equipo)
 # ════════════════════════════════════════════════════════════════════════════
-@app.get("/", tags=["Sistema"], summary="Healthcheck e información general", response_model=InfoAPI)
-def root():
+@app.get("/", response_class=HTMLResponse, tags=["Sistema"],
+         summary="Dashboard web — Centro de Control de Vehículos")
+def dashboard():
+    """
+    Panel visual para ver, agregar, editar y eliminar vehículos desde el
+    navegador, y ver el estado en vivo de la simulación — sin necesitar
+    Postman ni curl. Consume esta misma API (mismo origen) vía fetch().
+    """
+    try:
+        with open(DASHBOARD_PATH, encoding="utf-8") as f:
+            return HTMLResponse(content=f.read())
+    except FileNotFoundError:
+        return HTMLResponse(
+            content="<h1>dashboard.html no encontrado</h1>"
+                    "<p>Verifica que el archivo esté junto a api_vehiculos.py. "
+                    "Mientras tanto: <a href='/api/info'>/api/info</a> (JSON) "
+                    "o <a href='/docs'>/docs</a> (Swagger).</p>",
+            status_code=500,
+        )
+
+
+@app.get("/api/info", tags=["Sistema"], summary="Healthcheck e información general (JSON)", response_model=InfoAPI)
+def info():
     with get_db() as db:
         total = db.execute("SELECT COUNT(*) AS n FROM vehiculos").fetchone()["n"]
     return {
@@ -562,6 +585,7 @@ def root():
         "estado": "ok",
         "total_vehiculos": total,
         "endpoints": [
+            "GET    /                              (dashboard web)",
             "GET    /api/vehiculos",
             "POST   /api/vehiculos",
             "GET    /api/vehiculos/{id}",
@@ -591,8 +615,9 @@ if __name__ == "__main__":
     print(f"  Base de datos   : {DB_PATH}")
     print(f"  Vehículos en BD : {_TOTAL_INICIAL}")
     print(f"  Puerto          : {PUERTO}")
-    print(f"  (Local)  URL    : http://127.0.0.1:{PUERTO}")
-    print(f"  (Local)  Docs   : http://127.0.0.1:{PUERTO}/docs")
+    print(f"  (Local)  URL       : http://127.0.0.1:{PUERTO}")
+    print(f"  (Local)  Dashboard : http://127.0.0.1:{PUERTO}/  (panel visual)")
+    print(f"  (Local)  Docs      : http://127.0.0.1:{PUERTO}/docs")
     print("=" * 60)
     print("  NOTA: en el plan free de Render el disco es efímero entre")
     print("  deploys (redeploy = vehiculos.db se reinicia desde el CSV).")

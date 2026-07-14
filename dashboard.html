@@ -1,0 +1,972 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>COCKPIT // Centro de Mando de Flota</title>
+<style>
+:root{
+    --bg:#0a0605; --carbon1:#0d0908; --carbon2:#141010;
+    --rosso:#b3121b; --rosso-bright:#ff2f3c; --rosso-dim:rgba(255,47,60,.14);
+    --oro:#d4af37; --oro-dim:rgba(212,175,55,.18);
+    --plata:#c9ced6; --plata-dim:#5f656d;
+    --verde:#39ff14; --ambar:#ffb000; --azul:#2fb8ff;
+    --texto:#e8e2da; --texto-op:#a89f94;
+    --mono:'Courier New', ui-monospace, monospace;
+    --sans: Arial, 'Helvetica Neue', sans-serif;
+}
+*{box-sizing:border-box; scrollbar-width:thin; scrollbar-color:var(--oro-dim) transparent;}
+::-webkit-scrollbar{width:8px;height:8px;} ::-webkit-scrollbar-thumb{background:#2a2018;border-radius:4px;}
+body{
+    margin:0; min-height:100vh; color:var(--texto); font-family:var(--sans);
+    background:
+        radial-gradient(ellipse at 50% -10%, rgba(179,18,27,.10), transparent 55%),
+        repeating-linear-gradient(135deg, var(--carbon1) 0px, var(--carbon1) 2px, var(--carbon2) 2px, var(--carbon2) 4px),
+        var(--bg);
+}
+.marco{ max-width:1500px; margin:0 auto; padding:18px 22px 70px; }
+
+/* ══════════ HEADER / BADGE ══════════ */
+.header{
+    display:flex; align-items:center; gap:18px; padding:14px 22px;
+    background:linear-gradient(180deg, #171210, #0a0706);
+    border:1px solid #2a1f18; border-radius:16px; margin-bottom:16px;
+    box-shadow:0 10px 30px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.03);
+}
+.emblema{
+    width:46px; height:46px; border-radius:50%; flex-shrink:0;
+    background:radial-gradient(circle at 32% 28%, #3a2a1a, #0a0705 70%);
+    border:2px solid var(--oro); display:flex; align-items:center; justify-content:center;
+    font-family:var(--sans); font-weight:900; font-size:15px; color:var(--oro); letter-spacing:-1px;
+    box-shadow:0 0 14px rgba(212,175,55,.25), inset 0 0 8px rgba(0,0,0,.6);
+}
+.header h1{ margin:0; font-size:16px; letter-spacing:3px; color:var(--texto); font-weight:900; }
+.header .sub{ font-size:9.5px; color:var(--texto-op); letter-spacing:1.5px; margin-top:2px; }
+.lcd-strip{
+    margin-left:auto; display:flex; gap:0; background:#050403; border:1px solid #2a2018; border-radius:8px; overflow:hidden;
+}
+.lcd-cell{ padding:8px 16px; text-align:center; border-right:1px solid #2a2018; font-family:var(--mono); }
+.lcd-cell:last-child{ border-right:none; }
+.lcd-cell .v{ font-size:14px; color:var(--ambar); text-shadow:0 0 6px rgba(255,176,0,.5); }
+.lcd-cell .k{ font-size:7.5px; color:var(--texto-op); letter-spacing:1px; margin-top:1px; }
+.btn-header{
+    background:var(--rosso-dim); border:1px solid var(--rosso); color:#ffb3b8; padding:9px 16px;
+    border-radius:8px; cursor:pointer; font-family:var(--sans); font-weight:700; font-size:11px;
+    letter-spacing:.5px; transition:.15s;
+}
+.btn-header:hover{ background:var(--rosso); color:#fff; box-shadow:0 0 16px rgba(255,47,60,.4); }
+
+/* ══════════ CLÚSTER DE INSTRUMENTOS (gauges) ══════════ */
+.cluster{
+    display:grid; grid-template-columns:repeat(4,1fr); gap:14px; margin-bottom:16px;
+}
+.gauge-card{
+    background:radial-gradient(ellipse at 50% 20%, #1a1310, #060403 75%);
+    border:1px solid #2a1f18; border-radius:16px; padding:12px 8px 10px;
+    display:flex; flex-direction:column; align-items:center;
+    box-shadow:inset 0 0 24px rgba(0,0,0,.6), 0 8px 20px rgba(0,0,0,.35);
+}
+.gauge-card svg{ display:block; }
+.gauge-titulo{ font-size:9px; letter-spacing:1.5px; color:var(--texto-op); margin-top:4px; font-weight:700; }
+
+/* ══════════ LAYOUT PRINCIPAL: espejo / parabrisas / espejo ══════════ */
+.cabina{ display:grid; grid-template-columns:200px 1fr 200px; gap:16px; align-items:start; }
+@media(max-width:1180px){ .cabina{ grid-template-columns:1fr; } .espejo{ order:3; } }
+
+.espejo{
+    background:linear-gradient(160deg, #171210, #070504); border:2px solid #2a1f18;
+    border-radius:16px 16px 34px 34px; padding:14px; position:relative;
+    box-shadow:0 12px 26px rgba(0,0,0,.45), inset 0 0 20px rgba(0,0,0,.5);
+}
+.espejo::before{
+    content:''; position:absolute; top:-13px; left:50%; transform:translateX(-50%);
+    width:4px; height:15px; background:#2a1f18; border-radius:2px;
+}
+.espejo h4{ margin:0 0 10px; font-size:9.5px; letter-spacing:1.5px; color:var(--oro); text-transform:uppercase; }
+.espejo-item{ font-size:10px; padding:7px 0; border-bottom:1px solid #1e1712; display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
+.espejo-item:last-child{ border-bottom:none; }
+.espejo-vacio{ font-size:10px; color:var(--texto-op); line-height:1.5; }
+
+/* ══════════ PARABRISAS (viewport principal) ══════════ */
+.parabrisas{
+    position:relative; border-radius:26px 26px 10px 10px;
+    background:linear-gradient(180deg, rgba(24,28,34,.55), rgba(6,7,9,.9));
+    border:9px solid #100c0a; box-shadow:inset 0 0 70px rgba(0,0,0,.65), 0 20px 50px rgba(0,0,0,.5);
+    padding:20px; min-height:460px; overflow:hidden;
+}
+.parabrisas::before{
+    content:''; position:absolute; top:-50%; left:-25%; width:55%; height:200%;
+    background:linear-gradient(120deg, transparent 35%, rgba(255,255,255,.035) 48%, transparent 62%);
+    pointer-events:none; transform:rotate(6deg);
+}
+.hud-titulo{ display:flex; justify-content:space-between; align-items:baseline; margin-bottom:14px; }
+.hud-titulo h2{ margin:0; font-size:13px; letter-spacing:2px; color:var(--texto); }
+.hud-titulo h2 span{ color:var(--rosso-bright); }
+.hud-titulo .meta{ font-size:9.5px; color:var(--texto-op); font-family:var(--mono); }
+
+.vista-hud{ display:none; }
+.vista-hud.activa{ display:block; animation:fadein .25s; }
+@keyframes fadein{ from{opacity:0; transform:translateY(4px);} to{opacity:1; transform:none;} }
+
+/* ══════════ VOLANTE (navegación) ══════════ */
+.volante-zona{ display:flex; justify-content:center; margin:22px 0 8px; }
+.volante{ position:relative; width:230px; height:230px; }
+.volante-aro{
+    position:absolute; inset:0; border-radius:50%;
+    background:radial-gradient(circle at 35% 28%, #241a14 0%, #0a0706 70%);
+    border:13px solid #171010; box-shadow:inset 0 0 34px rgba(0,0,0,.75), 0 0 22px rgba(0,0,0,.5);
+}
+.volante-aro::after{
+    content:''; position:absolute; inset:13px; border-radius:50%; border:2px solid rgba(212,175,55,.18);
+}
+.volante-cubo{
+    position:absolute; top:50%; left:50%; width:64px; height:64px; margin:-32px;
+    border-radius:50%; background:radial-gradient(circle at 35% 28%, #2c2019, #0a0706);
+    border:2px solid var(--oro); display:flex; align-items:center; justify-content:center;
+    font-weight:900; font-size:12px; color:var(--oro); letter-spacing:-.5px;
+    box-shadow:0 0 14px rgba(212,175,55,.2);
+}
+.volante-btn{
+    position:absolute; width:58px; height:58px; border-radius:14px;
+    background:#12100e; border:1px solid #3a2c20; color:var(--plata);
+    display:flex; flex-direction:column; align-items:center; justify-content:center; gap:2px;
+    font-size:8.5px; letter-spacing:.5px; cursor:pointer; transition:.2s; font-weight:700;
+    box-shadow:0 4px 10px rgba(0,0,0,.4);
+}
+.volante-btn .ico{ font-size:16px; }
+.volante-btn:hover{ border-color:var(--oro); color:var(--oro); }
+.volante-btn.activo{
+    background:var(--rosso); border-color:var(--rosso-bright); color:#fff;
+    box-shadow:0 0 18px rgba(255,47,60,.55), 0 4px 10px rgba(0,0,0,.4);
+}
+
+/* ══════════ LLANTAS (filtros de categoría) ══════════ */
+.llantas-fila{ display:flex; gap:16px; align-items:center; justify-content:center; margin:6px 0 20px; flex-wrap:wrap; }
+.llanta{ display:flex; flex-direction:column; align-items:center; gap:6px; cursor:pointer; user-select:none; }
+.llanta-rueda{
+    width:60px; height:60px; border-radius:50%; position:relative;
+    background:
+        repeating-conic-gradient(from 0deg, #050403 0deg 7deg, #171310 7deg 14deg);
+    border:3px solid #2a2018; transition:transform .9s linear, border-color .2s, box-shadow .2s;
+}
+.llanta-rueda::after{
+    content:''; position:absolute; inset:19px; border-radius:50%;
+    background:radial-gradient(circle at 35% 28%, var(--plata), #6b6f75 55%, #2a2c30);
+    border:2px solid var(--oro);
+}
+.llanta.activa .llanta-rueda{ border-color:var(--rosso-bright); box-shadow:0 0 16px rgba(255,47,60,.45); transform:rotate(360deg); }
+.llanta:hover .llanta-rueda{ transform:rotate(360deg); }
+.llanta-label{ font-size:9px; color:var(--texto-op); letter-spacing:.5px; font-weight:700; }
+.llanta.activa .llanta-label{ color:var(--rosso-bright); }
+.llanta-count{ font-size:8px; color:var(--texto-op); }
+
+/* ══════════ TABLA FLOTA ══════════ */
+.toolbar-hud{ display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; gap:10px; flex-wrap:wrap; }
+.buscador-hud{ position:relative; flex:1; max-width:280px; }
+.buscador-hud input{
+    width:100%; background:#0d0a08; border:1px solid #2a1f18; color:var(--texto);
+    padding:8px 12px 8px 28px; border-radius:8px; font-family:var(--mono); font-size:11px;
+}
+.buscador-hud::before{ content:'⌕'; position:absolute; left:9px; top:50%; transform:translateY(-50%); color:var(--texto-op); }
+select{
+    background:#0d0a08; border:1px solid #2a1f18; color:var(--texto); padding:7px 9px;
+    border-radius:7px; font-family:var(--mono); font-size:10.5px;
+}
+.btn-hud{
+    background:#12100e; border:1px solid #3a2c20; color:var(--plata); padding:7px 13px;
+    border-radius:7px; cursor:pointer; font-family:var(--sans); font-size:10.5px; font-weight:700; transition:.15s;
+}
+.btn-hud:hover{ border-color:var(--oro); color:var(--oro); }
+.btn-hud.peligro{ border-color:var(--rosso); color:#ffb3b8; }
+.btn-hud.peligro:hover{ background:var(--rosso); color:#fff; }
+.btn-hud[disabled]{ opacity:.3; cursor:not-allowed; }
+
+table{ width:100%; border-collapse:collapse; font-size:11px; }
+thead th{
+    text-align:left; padding:8px 10px; font-size:9px; color:var(--oro); text-transform:uppercase;
+    letter-spacing:.6px; border-bottom:1px solid #2a1f18; cursor:pointer; white-space:nowrap;
+}
+thead th:hover{ color:var(--rosso-bright); }
+tbody td{ padding:9px 10px; border-bottom:1px solid #1a1410; vertical-align:middle; }
+tbody tr:hover{ background:rgba(255,47,60,.04); }
+.avatar-hud{ width:24px; height:24px; border-radius:6px; display:inline-flex; align-items:center; justify-content:center; font-size:12px; border:1px solid rgba(255,255,255,.15); }
+.swatch{ width:10px; height:10px; border-radius:3px; display:inline-block; border:1px solid rgba(255,255,255,.25); }
+.badge-hud{ padding:2px 8px; border-radius:20px; font-size:9.5px; display:inline-block; }
+.badge-verde{ background:rgba(57,255,20,.12); color:var(--verde); border:1px solid rgba(57,255,20,.25); }
+.badge-amar{ background:rgba(255,176,0,.12); color:var(--ambar); border:1px solid rgba(255,176,0,.25); }
+.badge-rojo{ background:var(--rosso-dim); color:#ff8f97; border:1px solid rgba(255,47,60,.3); }
+.badge-gris{ background:#161210; color:var(--texto-op); border:1px solid #2a1f18; }
+.acciones-hud button{ background:none; border:1px solid #2a1f18; color:var(--texto-op); border-radius:6px; padding:4px 7px; cursor:pointer; font-size:10px; margin-right:4px; }
+.acciones-hud button:hover{ border-color:var(--oro); color:var(--oro); }
+.acciones-hud button.del:hover{ border-color:var(--rosso); color:var(--rosso-bright); }
+.vacio-hud{ text-align:center; padding:40px; color:var(--texto-op); font-size:11px; }
+.paginacion-hud{ display:flex; justify-content:center; gap:12px; align-items:center; padding:12px; font-size:10.5px; color:var(--texto-op); }
+
+/* ══════════ RADAR ══════════ */
+.radar-hud-box{ display:flex; gap:16px; flex-wrap:wrap; justify-content:center; }
+#radarCanvas{ border-radius:12px; border:1px solid #2a1f18; background:radial-gradient(circle, #0c0a08, #050403); }
+.radar-info{ display:flex; flex-direction:column; gap:10px; min-width:180px; }
+.mini-stat{ background:#0d0a08; border:1px solid #2a1f18; border-radius:10px; padding:10px 12px; }
+.mini-stat .v{ font-size:18px; color:var(--rosso-bright); font-family:var(--mono); }
+.mini-stat .k{ font-size:8.5px; color:var(--texto-op); text-transform:uppercase; }
+#radarTip{ position:absolute; background:#12100e; border:1px solid var(--oro); border-radius:6px; padding:5px 9px; font-size:9.5px; display:none; pointer-events:none; z-index:5; }
+
+/* ══════════ ANALÍTICA ══════════ */
+.barra-hud{ display:flex; align-items:center; gap:10px; margin-bottom:9px; font-size:10.5px; }
+.barra-hud .nombre{ width:100px; flex-shrink:0; color:var(--texto); }
+.barra-hud .track{ flex:1; height:7px; background:#161210; border-radius:5px; overflow:hidden; }
+.barra-hud .fill{ height:100%; background:linear-gradient(90deg, var(--rosso), var(--oro)); transition:width .4s; }
+.barra-hud .num{ width:28px; text-align:right; color:var(--texto-op); }
+.tipo-ficha{ background:#0d0a08; border:1px solid #2a1f18; border-radius:12px; padding:14px; }
+.tipo-ficha .ico{ font-size:22px; }
+.tipo-ficha h4{ margin:8px 0 8px; font-size:12px; color:var(--texto); }
+.tipo-ficha .fila{ display:flex; justify-content:space-between; font-size:10px; color:var(--texto-op); padding:2px 0; }
+.tipo-ficha .fila b{ color:var(--oro); }
+.grid-tipos{ display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; }
+
+/* ══════════ COMPUTADORA DE VIAJE (terminal LCD) ══════════ */
+.trip-computer{
+    background:#050403; border:8px solid #171310; border-radius:12px; overflow:hidden;
+    box-shadow:inset 0 0 20px rgba(255,176,0,.05), 0 10px 26px rgba(0,0,0,.5);
+}
+.trip-header{ display:flex; align-items:center; gap:8px; padding:8px 14px; background:#0a0806; border-bottom:1px solid #221c14; font-size:9px; color:var(--texto-op); letter-spacing:1px; }
+.trip-header .d{ width:6px; height:6px; border-radius:50%; background:var(--verde); box-shadow:0 0 6px var(--verde); }
+.trip-body{
+    height:300px; overflow-y:auto; padding:12px 16px; font-family:var(--mono); font-size:11.5px;
+    color:var(--ambar); text-shadow:0 0 3px rgba(255,176,0,.35); line-height:1.7;
+}
+.trip-body .l{ display:flex; gap:8px; }
+.trip-body .t{ color:#4a3d1e; flex-shrink:0; }
+.trip-body .cmd .msg::before{ content:'❯ '; color:var(--rosso-bright); }
+.trip-body .cmd .msg{ color:#ffe08a; }
+.trip-body .ok .msg{ color:var(--verde); text-shadow:0 0 3px rgba(57,255,20,.35); }
+.trip-body .err .msg{ color:var(--rosso-bright); text-shadow:0 0 3px rgba(255,47,60,.35); }
+.trip-input-row{ display:flex; align-items:center; gap:8px; padding:10px 14px; border-top:1px solid #221c14; background:#070604; }
+.trip-input-row .prompt{ color:var(--rosso-bright); font-family:var(--mono); font-size:12px; }
+.trip-input-row input{ flex:1; background:transparent; border:none; color:#ffe08a; font-family:var(--mono); font-size:12px; outline:none; text-shadow:0 0 3px rgba(255,176,0,.3); }
+.trip-cursor{ width:7px; height:13px; background:var(--ambar); animation:parpadeo 1s step-end infinite; }
+@keyframes parpadeo{ 50%{opacity:0;} }
+.trip-ayuda{ margin-top:10px; font-size:9.5px; color:var(--texto-op); display:flex; flex-wrap:wrap; gap:5px 14px; }
+.trip-ayuda code{ color:var(--oro); background:var(--oro-dim); padding:1px 6px; border-radius:4px; font-family:var(--mono); }
+
+/* ══════════ MODAL — "PANEL DE SERVICIO" ══════════ */
+.modal-fondo{ display:none; position:fixed; inset:0; background:rgba(4,2,1,.8); backdrop-filter:blur(2px); align-items:center; justify-content:center; z-index:60; }
+.modal-fondo.activo{ display:flex; }
+.modal-hud{
+    background:linear-gradient(180deg, #171210, #0a0706); border:1px solid var(--oro);
+    box-shadow:0 0 50px rgba(212,175,55,.12); border-radius:16px; padding:22px 24px;
+    width:460px; max-width:92vw; max-height:88vh; overflow-y:auto;
+}
+.modal-hud h2{ margin:0 0 3px; font-size:14px; color:var(--oro); letter-spacing:1px; }
+.modal-hud .sub{ font-size:9.5px; color:var(--texto-op); margin-bottom:16px; }
+.grid-campos-hud{ display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+.campo-hud{ margin-bottom:10px; }
+.campo-hud.full{ grid-column:1/-1; }
+.campo-hud label{ display:block; font-size:9px; color:var(--texto-op); margin-bottom:5px; text-transform:uppercase; letter-spacing:.5px; }
+.campo-hud input, .campo-hud select{ width:100%; background:#0d0a08; border:1px solid #2a1f18; color:var(--texto); padding:8px 10px; border-radius:7px; font-family:var(--sans); font-size:11.5px; }
+.campo-hud input:focus, .campo-hud select:focus{ outline:none; border-color:var(--oro); }
+.modal-botones{ display:flex; justify-content:flex-end; gap:8px; margin-top:16px; }
+
+/* ══════════ TOAST ══════════ */
+.toast-zona{ position:fixed; bottom:20px; right:20px; display:flex; flex-direction:column; gap:8px; z-index:100; }
+.toast-hud{
+    background:#12100e; border:1px solid var(--oro); color:var(--texto); padding:10px 16px;
+    border-radius:8px; font-size:11px; opacity:0; transform:translateX(16px); transition:.25s; max-width:300px;
+    box-shadow:0 8px 22px rgba(0,0,0,.5);
+}
+.toast-hud.mostrar{ opacity:1; transform:none; }
+.toast-hud.error{ border-color:var(--rosso); }
+.toast-hud.exito{ border-color:var(--verde); }
+
+footer{ text-align:center; padding:16px; font-size:9.5px; color:var(--texto-op); }
+footer a{ color:var(--oro); text-decoration:none; }
+</style>
+</head>
+<body>
+<div class="marco">
+
+    <!-- ══════════ HEADER ══════════ -->
+    <div class="header">
+        <div class="emblema">AV</div>
+        <div>
+            <h1>COCKPIT DE FLOTA</h1>
+            <div class="sub">SISTEMA MAS · AGENTE VEHÍCULO · UNIDAD DE MANDO</div>
+        </div>
+        <div class="lcd-strip">
+            <div class="lcd-cell"><div class="v" id="lcdReloj">00:00:00</div><div class="k">HORA</div></div>
+            <div class="lcd-cell"><div class="v" id="lcdPing">-- ms</div><div class="k">LATENCIA</div></div>
+            <div class="lcd-cell"><div class="v" id="lcdConexion">●</div><div class="k">ENLACE</div></div>
+        </div>
+        <button class="btn-header" onclick="cargarTodo(true)">↻ REFRESCAR</button>
+        <button class="btn-header" onclick="abrirModalCrear()" style="background:var(--oro-dim); border-color:var(--oro); color:var(--oro);">＋ VEHÍCULO</button>
+    </div>
+
+    <!-- ══════════ CLÚSTER DE INSTRUMENTOS ══════════ -->
+    <div class="cluster">
+        <div class="gauge-card"><svg id="gaugeTotal" width="150" height="100" viewBox="0 0 180 120"></svg><div class="gauge-titulo">FLOTA TOTAL</div></div>
+        <div class="gauge-card"><svg id="gaugeActivos" width="150" height="100" viewBox="0 0 180 120"></svg><div class="gauge-titulo">% ACTIVOS</div></div>
+        <div class="gauge-card"><svg id="gaugeSoat" width="150" height="100" viewBox="0 0 180 120"></svg><div class="gauge-titulo">SALUD SOAT</div></div>
+        <div class="gauge-card"><svg id="gaugeVivo" width="150" height="100" viewBox="0 0 180 120"></svg><div class="gauge-titulo">EN PISTA (VIVO)</div></div>
+    </div>
+
+    <!-- ══════════ CABINA: espejo / parabrisas / espejo ══════════ -->
+    <div class="cabina">
+        <!-- ESPEJO IZQUIERDO: alertas SOAT -->
+        <div class="espejo">
+            <h4>⚠ ALERTAS SOAT</h4>
+            <div id="espejoSoat"></div>
+        </div>
+
+        <!-- PARABRISAS: contenido principal -->
+        <div class="parabrisas">
+            <div class="hud-titulo">
+                <h2 id="hudTitulo">GESTIÓN DE <span>FLOTA</span></h2>
+                <div class="meta" id="hudMeta"></div>
+            </div>
+
+            <!-- VISTA: FLOTA -->
+            <div class="vista-hud activa" id="hud-flota">
+                <div class="llantas-fila">
+                    <div class="llanta" data-cat="" onclick="filtrarPorLlanta('')"><div class="llanta-rueda"></div><div class="llanta-label">TODAS</div><div class="llanta-count" id="cntTodas">0</div></div>
+                    <div class="llanta" data-cat="Motocicleta" onclick="filtrarPorLlanta('Motocicleta')"><div class="llanta-rueda"></div><div class="llanta-label">🏍 MOTO</div><div class="llanta-count" id="cntMoto">0</div></div>
+                    <div class="llanta" data-cat="Automóvil" onclick="filtrarPorLlanta('Automóvil')"><div class="llanta-rueda"></div><div class="llanta-label">🚗 AUTO</div><div class="llanta-count" id="cntAuto">0</div></div>
+                    <div class="llanta" data-cat="Camioneta" onclick="filtrarPorLlanta('Camioneta')"><div class="llanta-rueda"></div><div class="llanta-label">🚙 PICKUP</div><div class="llanta-count" id="cntCamioneta">0</div></div>
+                    <div class="llanta" data-cat="Bus" onclick="filtrarPorLlanta('Bus')"><div class="llanta-rueda"></div><div class="llanta-label">🚌 BUS</div><div class="llanta-count" id="cntBus">0</div></div>
+                </div>
+
+                <div class="toolbar-hud">
+                    <div class="buscador-hud"><input type="text" id="buscadorHud" placeholder="Buscar placa/chofer..." oninput="renderTablaVehiculos()"></div>
+                    <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                        <select id="filtroMapaHud" onchange="renderTablaVehiculos()"><option value="">Distrito: todos</option></select>
+                        <select id="filtroSoatHud" onchange="renderTablaVehiculos()">
+                            <option value="">SOAT: cualquiera</option><option value="vencido">Vencido</option>
+                            <option value="porvencer">Por vencer</option><option value="vigente">Vigente</option>
+                        </select>
+                        <button class="btn-hud peligro" id="btnBorrarSelHud" disabled onclick="eliminarSeleccionados()">🗑 Borrar (<span id="numSelHud">0</span>)</button>
+                        <button class="btn-hud" onclick="exportarCSV()">⭳ CSV</button>
+                    </div>
+                </div>
+                <div style="overflow-x:auto;">
+                <table>
+                    <thead><tr>
+                        <th style="width:26px;"><input type="checkbox" onchange="toggleSeleccionarTodos(this)"></th>
+                        <th onclick="ordenarPor('id')">ID</th><th onclick="ordenarPor('placa')">Vehículo</th>
+                        <th onclick="ordenarPor('categoria')">Cat.</th><th onclick="ordenarPor('chofer')">Chofer</th>
+                        <th onclick="ordenarPor('soat_vencimiento')">SOAT</th><th onclick="ordenarPor('mapa_clave')">Distrito</th>
+                        <th onclick="ordenarPor('activo')">Estado</th><th>Acciones</th>
+                    </tr></thead>
+                    <tbody id="tablaVehiculosHud"></tbody>
+                </table>
+                </div>
+                <div id="vacioHud" class="vacio-hud" style="display:none;">Sin resultados.</div>
+                <div class="paginacion-hud" id="paginacionHud"></div>
+            </div>
+
+            <!-- VISTA: RADAR -->
+            <div class="vista-hud" id="hud-radar">
+                <div class="radar-hud-box" style="position:relative;">
+                    <canvas id="radarCanvas" width="440" height="440"></canvas>
+                    <div id="radarTip"></div>
+                    <div class="radar-info">
+                        <div class="mini-stat"><div class="v" id="radarActivosHud">0</div><div class="k">circulando</div></div>
+                        <div class="mini-stat"><div class="v" id="radarControladoHud" style="font-size:13px;">—</div><div class="k">bajo control manual</div></div>
+                        <div class="mini-stat" id="radarVacioHud" style="display:none;"><div class="k" style="color:var(--texto-op);line-height:1.5;">Sin vehículos en pista. Abre <b style="color:var(--oro)">simulacion_visual.py</b> para verlos aquí.</div></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- VISTA: ANALÍTICA -->
+            <div class="vista-hud" id="hud-analitica">
+                <div style="display:grid; grid-template-columns:1fr 1fr; gap:20px;">
+                    <div><div class="gauge-titulo" style="margin-bottom:10px;">POR DISTRITO</div><div id="barrasDistritoHud"></div></div>
+                    <div><div class="gauge-titulo" style="margin-bottom:10px;">POR CATEGORÍA</div><div id="barrasCategoriaHud"></div></div>
+                </div>
+                <div class="gauge-titulo" style="margin:20px 0 10px;">FICHA TÉCNICA POR TIPO</div>
+                <div class="grid-tipos" id="gridTiposHud"></div>
+            </div>
+
+            <!-- VISTA: TERMINAL -->
+            <div class="vista-hud" id="hud-terminal">
+                <div class="trip-computer">
+                    <div class="trip-header"><span class="d"></span> COMPUTADORA DE VIAJE — CONSOLA DE COMANDOS</div>
+                    <div class="trip-body" id="tripBody"></div>
+                    <div class="trip-input-row">
+                        <span class="prompt">av&gt;</span>
+                        <input type="text" id="tripInput" autocomplete="off" placeholder="help">
+                        <span class="trip-cursor"></span>
+                    </div>
+                </div>
+                <div class="trip-ayuda">
+                    <span><code>help</code></span><span><code>ls</code></span><span><code>find &lt;texto&gt;</code></span>
+                    <span><code>stats</code></span><span><code>add placa=XXX color=Rojo categoria=Bus</code></span>
+                    <span><code>del &lt;id&gt; confirm</code></span><span><code>refresh</code></span><span><code>clear</code></span>
+                </div>
+            </div>
+        </div>
+
+        <!-- ESPEJO DERECHO: actividad -->
+        <div class="espejo">
+            <h4>◉ BITÁCORA</h4>
+            <div id="espejoActividad"></div>
+        </div>
+    </div>
+
+    <!-- ══════════ VOLANTE — NAVEGACIÓN ══════════ -->
+    <div class="volante-zona">
+        <div class="volante" id="volante">
+            <div class="volante-aro"></div>
+            <div class="volante-cubo">AV</div>
+            <div class="volante-btn activo" data-hud="flota" onclick="irAHud('flota')"><span class="ico">▤</span>FLOTA</div>
+            <div class="volante-btn" data-hud="radar" onclick="irAHud('radar')"><span class="ico">◎</span>RADAR</div>
+            <div class="volante-btn" data-hud="analitica" onclick="irAHud('analitica')"><span class="ico">▦</span>DATOS</div>
+            <div class="volante-btn" data-hud="terminal" onclick="irAHud('terminal')"><span class="ico">▶</span>CMD</div>
+        </div>
+    </div>
+
+    <footer>API Agente Vehículo v3.0 · <a href="/docs" target="_blank">Documentación Swagger</a> · <a href="/api/vehiculos" target="_blank">JSON crudo</a></footer>
+</div>
+
+<!-- MODAL -->
+<div class="modal-fondo" id="modalFondo">
+    <div class="modal-hud">
+        <h2 id="modalTitulo">Registrar Vehículo</h2>
+        <div class="sub">Panel de servicio — los campos con * son obligatorios.</div>
+        <input type="hidden" id="campoId">
+        <div class="grid-campos-hud">
+            <div class="campo-hud"><label>Placa *</label><input type="text" id="campoPlaca" maxlength="10"></div>
+            <div class="campo-hud"><label>Color *</label>
+                <select id="campoColor">
+                    <option>Amarillo</option><option>Azul</option><option>Beige</option><option>Blanco</option>
+                    <option>Dorado</option><option>Gris</option><option>Marrón</option><option>Naranja</option>
+                    <option>Negro</option><option>Plateado</option><option>Rojo</option><option>Verde</option>
+                </select>
+            </div>
+            <div class="campo-hud"><label>Categoría *</label>
+                <select id="campoCategoria"><option>Automóvil</option><option>Camioneta</option><option>Bus</option><option>Motocicleta</option></select>
+            </div>
+            <div class="campo-hud"><label>Distrito</label><input type="text" id="campoMapa" value="centro"></div>
+            <div class="campo-hud"><label>Tamaño</label><input type="text" id="campoTamano"></div>
+            <div class="campo-hud"><label>SOAT vence</label><input type="text" id="campoSoat" placeholder="DD/MM/AAAA"></div>
+            <div class="campo-hud full"><label>Usuario</label><input type="text" id="campoUsuario"></div>
+            <div class="campo-hud"><label>Chofer</label><input type="text" id="campoChofer"></div>
+            <div class="campo-hud"><label>Licencia</label><input type="text" id="campoLicencia"></div>
+        </div>
+        <div class="modal-botones">
+            <button class="btn-hud" onclick="cerrarModal()">Cancelar</button>
+            <button class="btn-hud" style="border-color:var(--oro); color:var(--oro);" onclick="guardarVehiculo()">Guardar</button>
+        </div>
+    </div>
+</div>
+
+<div class="toast-zona" id="toastZona"></div>
+
+<script>
+const API_BASE = "";
+let vehiculos = [], tiposInfo = {}, coloresInfo = {};
+let estadoVivo = { activos: [], posiciones: {}, controlado_por_usuario: null };
+let editando = false, seleccionados = new Set();
+let orden = { campo:"id", asc:true }, pagina = 1;
+const POR_PAGINA = 10;
+let logEventos = [], filtroCategoriaActivo = "";
+let historialComandos = [], idxHist = -1;
+const COLOR_CAT = { "Automóvil":"#2fb8ff", "Camioneta":"#d4af37", "Bus":"#ffb000", "Motocicleta":"#39ff14" };
+
+/* ── HTTP ─────────────────────────────────────────────────────────────── */
+async function apiGet(ruta){
+    const t0 = performance.now();
+    const r = await fetch(API_BASE+ruta);
+    const ms = performance.now()-t0;
+    document.getElementById("lcdPing").textContent = ms.toFixed(0)+" ms";
+    if(!r.ok) throw new Error(`HTTP ${r.status}`);
+    return r.json();
+}
+async function apiSend(ruta, metodo, body){
+    const r = await fetch(API_BASE+ruta, {method:metodo, headers:{"Content-Type":"application/json"}, body: body?JSON.stringify(body):undefined});
+    const d = await r.json().catch(()=>({}));
+    if(!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
+    return d;
+}
+function marcarConexion(ok){
+    document.getElementById("lcdConexion").style.color = ok ? "var(--verde)" : "var(--rosso-bright)";
+    document.getElementById("lcdConexion").style.textShadow = ok ? "0 0 6px var(--verde)" : "0 0 6px var(--rosso-bright)";
+}
+function toast(msg, tipo="normal"){
+    const zona = document.getElementById("toastZona");
+    const el = document.createElement("div");
+    el.className = "toast-hud "+(tipo==="error"?"error":tipo==="exito"?"exito":"");
+    el.textContent = (tipo==="error"?"✕ ":tipo==="exito"?"✓ ":"› ")+msg;
+    zona.appendChild(el);
+    requestAnimationFrame(()=>el.classList.add("mostrar"));
+    setTimeout(()=>{ el.classList.remove("mostrar"); setTimeout(()=>el.remove(),300); }, 3400);
+}
+
+/* ── Reloj ────────────────────────────────────────────────────────────── */
+setInterval(()=>{ document.getElementById("lcdReloj").textContent = new Date().toLocaleTimeString("es-PE",{hour12:false}); }, 1000);
+
+/* ── Navegación (volante) ────────────────────────────────────────────── */
+const TITULOS_HUD = {
+    flota:["GESTIÓN DE <span>FLOTA</span>","alta, edición y baja de unidades"],
+    radar:["RADAR EN <span>VIVO</span>","posiciones reales de /api/vehiculos/estado/actual"],
+    analitica:["ANALÍTICA DE <span>FLOTA</span>","distribución por distrito y categoría"],
+    terminal:["CONSOLA DE <span>COMANDOS</span>","interactúa con la API sin salir del navegador"],
+};
+function irAHud(vista){
+    document.querySelectorAll(".volante-btn").forEach(b=>b.classList.toggle("activo", b.dataset.hud===vista));
+    document.querySelectorAll(".vista-hud").forEach(v=>v.classList.remove("activa"));
+    document.getElementById("hud-"+vista).classList.add("activa");
+    document.getElementById("hudTitulo").innerHTML = TITULOS_HUD[vista][0];
+    document.getElementById("hudMeta").textContent = TITULOS_HUD[vista][1];
+    if(vista==="terminal") document.getElementById("tripInput").focus();
+}
+
+/* ── Fechas / SOAT ────────────────────────────────────────────────────── */
+function parsearFecha(str){
+    if(!str) return null;
+    let m = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+    if(m) return new Date(+m[3], +m[2]-1, +m[1]);
+    m = str.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+    if(m) return new Date(+m[1], +m[2]-1, +m[3]);
+    const d = new Date(str); return isNaN(d)?null:d;
+}
+function estadoSoat(str){
+    const f = parsearFecha(str);
+    if(!f) return {texto:"Sin dato", clase:"badge-gris", dias:null};
+    const hoy = new Date(); hoy.setHours(0,0,0,0);
+    const dias = Math.round((f-hoy)/86400000);
+    if(dias<0) return {texto:`Vencido ${Math.abs(dias)}d`, clase:"badge-rojo", dias};
+    if(dias<=30) return {texto:`${dias}d rest.`, clase:"badge-amar", dias};
+    return {texto:"Vigente", clase:"badge-verde", dias};
+}
+
+/* ── Gauges (velocímetro/tacómetro) ──────────────────────────────────── */
+function dibujarGauge(svgId, valor, max, color, sufijo=""){
+    const svg = document.getElementById(svgId);
+    const cx=90, cy=98, r=68;
+    const aIni=-120, aFin=120;
+    const frac = Math.max(0, Math.min(1, max>0 ? valor/max : 0));
+    const aAguja = aIni + frac*(aFin-aIni);
+    const toRad = a => (a-90)*Math.PI/180;
+
+    let ticks = "";
+    const nTicks = 10;
+    for(let i=0;i<=nTicks;i++){
+        const a = aIni + (i/nTicks)*(aFin-aIni);
+        const rad = toRad(a);
+        const x1=cx+Math.cos(rad)*(r-3), y1=cy+Math.sin(rad)*(r-3);
+        const x2=cx+Math.cos(rad)*(r-12), y2=cy+Math.sin(rad)*(r-12);
+        ticks += `<line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="#8a7f74" stroke-width="${i%5===0?2:1}" opacity="${i%5===0?.9:.4}"/>`;
+    }
+    // Arco de progreso
+    const arcoPath = describirArco(cx,cy,r,aIni,aAguja);
+    const radAguja = toRad(aAguja);
+    const puntaX = cx+Math.cos(radAguja)*(r-16), puntaY = cy+Math.sin(radAguja)*(r-16);
+    const colaX = cx-Math.cos(radAguja)*12, colaY = cy-Math.sin(radAguja)*12;
+
+    svg.innerHTML = `
+        <path d="${describirArco(cx,cy,r,aIni,aFin)}" fill="none" stroke="#1a140f" stroke-width="6" stroke-linecap="round"/>
+        <path d="${arcoPath}" fill="none" stroke="${color}" stroke-width="6" stroke-linecap="round" style="filter:drop-shadow(0 0 5px ${color})"/>
+        ${ticks}
+        <line x1="${colaX.toFixed(1)}" y1="${colaY.toFixed(1)}" x2="${puntaX.toFixed(1)}" y2="${puntaY.toFixed(1)}" stroke="#eee" stroke-width="2.5" stroke-linecap="round"/>
+        <circle cx="${cx}" cy="${cy}" r="6" fill="#eee" stroke="${color}" stroke-width="2"/>
+        <text x="${cx}" y="${cy+30}" text-anchor="middle" fill="var(--texto)" font-size="19" font-weight="900" font-family="Arial">${valor}${sufijo}</text>
+    `;
+}
+function describirArco(cx,cy,r,a0,a1){
+    const toRad = a => (a-90)*Math.PI/180;
+    const p0x=cx+Math.cos(toRad(a0))*r, p0y=cy+Math.sin(toRad(a0))*r;
+    const p1x=cx+Math.cos(toRad(a1))*r, p1y=cy+Math.sin(toRad(a1))*r;
+    const largo = (a1-a0) > 180 ? 1 : 0;
+    return `M ${p0x.toFixed(1)} ${p0y.toFixed(1)} A ${r} ${r} 0 ${largo} 1 ${p1x.toFixed(1)} ${p1y.toFixed(1)}`;
+}
+
+/* ── Carga principal ──────────────────────────────────────────────────── */
+async function cargarTodo(manual=false){
+    try{
+        [vehiculos, tiposInfo, coloresInfo, estadoVivo] = await Promise.all([
+            apiGet("/api/vehiculos"), apiGet("/api/vehiculos/tipos"),
+            apiGet("/api/vehiculos/colores"), apiGet("/api/vehiculos/estado/actual"),
+        ]);
+        marcarConexion(true);
+        actualizarGauges();
+        actualizarFiltroMapas();
+        actualizarContadoresLlantas();
+        renderTablaVehiculos();
+        renderEspejoSoat();
+        renderRadar();
+        renderAnalitica();
+        renderTipos();
+        renderEspejoActividad();
+        if(manual) toast("Datos actualizados","exito");
+    }catch(e){
+        marcarConexion(false);
+        if(manual) toast("Sin conexión con la API","error");
+        console.error(e);
+    }
+}
+
+function actualizarGauges(){
+    const activos = vehiculos.filter(v=>v.activo).length;
+    const pctActivos = vehiculos.length ? Math.round(activos/vehiculos.length*100) : 0;
+    const soats = vehiculos.map(v=>estadoSoat(v.soat_vencimiento));
+    const vigentes = soats.filter(s=>s.dias!==null && s.dias>30).length;
+    const pctSoat = vehiculos.length ? Math.round(vigentes/vehiculos.length*100) : 0;
+    const enVivo = (estadoVivo.activos||[]).length;
+
+    dibujarGauge("gaugeTotal", vehiculos.length, Math.max(50, vehiculos.length+10), "#ff2f3c");
+    dibujarGauge("gaugeActivos", pctActivos, 100, "#39ff14", "%");
+    dibujarGauge("gaugeSoat", pctSoat, 100, "#ffb000", "%");
+    dibujarGauge("gaugeVivo", enVivo, Math.max(10, enVivo+2), "#2fb8ff");
+}
+
+function actualizarFiltroMapas(){
+    const sel = document.getElementById("filtroMapaHud"); const actual = sel.value;
+    const mapas = [...new Set(vehiculos.map(v=>v.mapa_clave))].sort();
+    sel.innerHTML = '<option value="">Distrito: todos</option>' + mapas.map(m=>`<option value="${m}">${m}</option>`).join("");
+    sel.value = actual;
+}
+function actualizarContadoresLlantas(){
+    document.getElementById("cntTodas").textContent = vehiculos.length;
+    document.getElementById("cntMoto").textContent = vehiculos.filter(v=>v.categoria==="Motocicleta").length;
+    document.getElementById("cntAuto").textContent = vehiculos.filter(v=>v.categoria==="Automóvil").length;
+    document.getElementById("cntCamioneta").textContent = vehiculos.filter(v=>v.categoria==="Camioneta").length;
+    document.getElementById("cntBus").textContent = vehiculos.filter(v=>v.categoria==="Bus").length;
+}
+function filtrarPorLlanta(cat){
+    filtroCategoriaActivo = cat;
+    document.querySelectorAll(".llanta").forEach(l=>l.classList.toggle("activa", l.dataset.cat===cat));
+    pagina = 1;
+    renderTablaVehiculos();
+}
+
+/* ── Tabla ────────────────────────────────────────────────────────────── */
+function obtenerFiltrados(){
+    const mapa = document.getElementById("filtroMapaHud").value;
+    const soatF = document.getElementById("filtroSoatHud").value;
+    const texto = document.getElementById("buscadorHud").value.trim().toLowerCase();
+    return vehiculos.filter(v=>{
+        if(filtroCategoriaActivo && v.categoria!==filtroCategoriaActivo) return false;
+        if(mapa && v.mapa_clave!==mapa) return false;
+        if(soatF){
+            const s = estadoSoat(v.soat_vencimiento);
+            if(soatF==="vencido" && !(s.dias!==null&&s.dias<0)) return false;
+            if(soatF==="porvencer" && !(s.dias!==null&&s.dias>=0&&s.dias<=30)) return false;
+            if(soatF==="vigente" && !(s.dias!==null&&s.dias>30)) return false;
+        }
+        if(texto && !`${v.placa} ${v.chofer||""} ${v.id}`.toLowerCase().includes(texto)) return false;
+        return true;
+    });
+}
+function ordenarPor(campo){
+    if(orden.campo===campo) orden.asc=!orden.asc; else { orden.campo=campo; orden.asc=true; }
+    pagina=1; renderTablaVehiculos();
+}
+function renderTablaVehiculos(){
+    let filtrados = obtenerFiltrados();
+    filtrados.sort((a,b)=>{
+        let va=a[orden.campo], vb=b[orden.campo];
+        if(orden.campo==="activo"){ va=+va; vb=+vb; }
+        if(va===undefined||va===null) va=""; if(vb===undefined||vb===null) vb="";
+        if(va<vb) return orden.asc?-1:1; if(va>vb) return orden.asc?1:-1; return 0;
+    });
+    const totalPag = Math.max(1, Math.ceil(filtrados.length/POR_PAGINA));
+    if(pagina>totalPag) pagina=totalPag;
+    const inicio=(pagina-1)*POR_PAGINA;
+    const actual = filtrados.slice(inicio, inicio+POR_PAGINA);
+
+    const tbody = document.getElementById("tablaVehiculosHud");
+    const vacio = document.getElementById("vacioHud");
+    if(filtrados.length===0){ tbody.innerHTML=""; vacio.style.display="block"; document.getElementById("paginacionHud").innerHTML=""; return; }
+    vacio.style.display="none";
+
+    tbody.innerHTML = actual.map(v=>{
+        const soat = estadoSoat(v.soat_vencimiento);
+        const marcado = seleccionados.has(v.id);
+        return `<tr>
+            <td><input type="checkbox" ${marcado?"checked":""} onchange="toggleSeleccion(${v.id}, this)"></td>
+            <td>#${v.id}</td>
+            <td><span class="avatar-hud" style="background:${v.color_hex}22;border-color:${v.color_hex}77;">${v.icono}</span>
+                <b style="margin-left:6px;">${v.placa}</b> <span class="swatch" style="background:${v.color_hex}"></span></td>
+            <td>${v.categoria}</td>
+            <td>${v.chofer||"—"}</td>
+            <td><span class="badge-hud ${soat.clase}">${soat.texto}</span></td>
+            <td>${v.mapa_clave}</td>
+            <td>${v.activo?'<span class="badge-hud badge-verde">activo</span>':'<span class="badge-hud badge-rojo">inactivo</span>'}</td>
+            <td class="acciones-hud"><button onclick="abrirModalEditar(${v.id})">✎</button><button class="del" onclick="eliminarVehiculo(${v.id},'${v.placa}')">🗑</button></td>
+        </tr>`;
+    }).join("");
+
+    document.getElementById("paginacionHud").innerHTML = totalPag>1 ? `
+        <button class="btn-hud" ${pagina<=1?"disabled":""} onclick="cambiarPagina(${pagina-1})">‹</button>
+        <span>${pagina} / ${totalPag} · ${filtrados.length} unidades</span>
+        <button class="btn-hud" ${pagina>=totalPag?"disabled":""} onclick="cambiarPagina(${pagina+1})">›</button>
+    ` : `<span>${filtrados.length} unidad(es)</span>`;
+    actualizarBarraSeleccion();
+}
+function cambiarPagina(p){ pagina=p; renderTablaVehiculos(); }
+function toggleSeleccion(id, chk){ if(chk.checked) seleccionados.add(id); else seleccionados.delete(id); actualizarBarraSeleccion(); }
+function toggleSeleccionarTodos(chk){
+    const f = obtenerFiltrados();
+    if(chk.checked) f.forEach(v=>seleccionados.add(v.id)); else f.forEach(v=>seleccionados.delete(v.id));
+    renderTablaVehiculos();
+}
+function actualizarBarraSeleccion(){
+    document.getElementById("numSelHud").textContent = seleccionados.size;
+    document.getElementById("btnBorrarSelHud").disabled = seleccionados.size===0;
+}
+async function eliminarSeleccionados(){
+    if(!confirm(`¿Eliminar ${seleccionados.size} vehículo(s)?`)) return;
+    let ok=0;
+    for(const id of seleccionados){ try{ await apiSend(`/api/vehiculos/${id}`,"DELETE"); registrarLog(`#${id} eliminado (lote)`,"err"); ok++; }catch(e){} }
+    seleccionados.clear();
+    toast(`${ok} eliminado(s)`,"exito");
+    await cargarTodo();
+}
+function exportarCSV(){
+    const f = obtenerFiltrados();
+    if(f.length===0){ toast("Nada que exportar","error"); return; }
+    const cols=["id","placa","color","categoria","chofer","licencia","soat_vencimiento","mapa_clave","activo"];
+    const filas=[cols.join(",")].concat(f.map(v=>cols.map(c=>`"${v[c]??""}"`).join(",")));
+    const blob = new Blob([filas.join("\n")], {type:"text/csv;charset=utf-8;"});
+    const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download=`flota_${new Date().toISOString().slice(0,10)}.csv`; a.click();
+    toast(`CSV exportado (${f.length} filas)`,"exito");
+}
+
+/* ── Espejo SOAT / Actividad ──────────────────────────────────────────── */
+function renderEspejoSoat(){
+    const alertas = vehiculos.map(v=>({v,s:estadoSoat(v.soat_vencimiento)})).filter(x=>x.s.dias!==null&&x.s.dias<=30).sort((a,b)=>a.s.dias-b.s.dias);
+    const cont = document.getElementById("espejoSoat");
+    if(alertas.length===0){ cont.innerHTML=`<div class="espejo-vacio">Sin vehículos con SOAT vencido o por vencer.</div>`; return; }
+    cont.innerHTML = alertas.slice(0,7).map(({v,s})=>`<div class="espejo-item">${v.icono} <b>${v.placa}</b><br><span class="badge-hud ${s.clase}" style="margin-top:2px;">${s.texto}</span></div>`).join("");
+}
+function registrarLog(msg, tipo="info"){
+    const hora = new Date().toLocaleTimeString("es-PE",{hour12:false});
+    logEventos.unshift({hora,msg,tipo});
+    if(logEventos.length>50) logEventos.pop();
+    renderEspejoActividad();
+}
+function renderEspejoActividad(){
+    const cont = document.getElementById("espejoActividad");
+    if(logEventos.length===0){ cont.innerHTML = `<div class="espejo-vacio">Sin actividad en esta sesión.</div>`; return; }
+    cont.innerHTML = logEventos.slice(0,8).map(e=>`<div class="espejo-item"><span style="color:var(--texto-op);font-size:8.5px;">${e.hora}</span> ${e.msg}</div>`).join("");
+}
+
+/* ── Radar ────────────────────────────────────────────────────────────── */
+function renderRadar(){
+    const canvas = document.getElementById("radarCanvas");
+    const size = canvas.width;
+    const ctx = canvas.getContext("2d");
+    ctx.clearRect(0,0,size,size);
+    ctx.strokeStyle="rgba(212,175,55,.08)"; ctx.lineWidth=1;
+    for(let r=size/2*.25;r<size/2;r+=size/2*.25){ ctx.beginPath(); ctx.arc(size/2,size/2,r,0,Math.PI*2); ctx.stroke(); }
+    ctx.beginPath(); ctx.moveTo(size/2,0); ctx.lineTo(size/2,size); ctx.moveTo(0,size/2); ctx.lineTo(size,size/2); ctx.stroke();
+
+    const activos = estadoVivo.activos||[], posiciones = estadoVivo.posiciones||{};
+    document.getElementById("radarActivosHud").textContent = activos.length;
+    const contId = estadoVivo.controlado_por_usuario;
+    const contVeh = vehiculos.find(v=>v.id===contId);
+    document.getElementById("radarControladoHud").textContent = contVeh ? contVeh.placa : "ninguno";
+    document.getElementById("radarVacioHud").style.display = activos.length===0 ? "block" : "none";
+    if(activos.length===0){ canvas._puntos=[]; return; }
+
+    const xs = activos.map(id=>posiciones[String(id)]?.x??0), ys = activos.map(id=>posiciones[String(id)]?.y??0);
+    const minX=Math.min(...xs,0), maxX=Math.max(...xs,800), minY=Math.min(...ys,0), maxY=Math.max(...ys,800);
+    const pad=20, escX=(size-pad*2)/((maxX-minX)||1), escY=(size-pad*2)/((maxY-minY)||1);
+    canvas._puntos=[];
+    activos.forEach(id=>{
+        const pos = posiciones[String(id)]; if(!pos) return;
+        const veh = vehiculos.find(v=>v.id===id);
+        const color = veh?(COLOR_CAT[veh.categoria]||"#fff"):"#fff";
+        const px=pad+(pos.x-minX)*escX, py=pad+(pos.y-minY)*escY;
+        ctx.beginPath(); ctx.arc(px,py,id===contId?7:5,0,Math.PI*2); ctx.fillStyle=color; ctx.shadowColor=color; ctx.shadowBlur=8; ctx.fill(); ctx.shadowBlur=0;
+        canvas._puntos.push({x:px,y:py,label:veh?veh.placa:`#${id}`});
+    });
+}
+document.addEventListener("DOMContentLoaded", ()=>{
+    const canvas = document.getElementById("radarCanvas");
+    const tip = document.getElementById("radarTip");
+    canvas.addEventListener("mousemove", e=>{
+        const rect = canvas.getBoundingClientRect();
+        const mx=e.clientX-rect.left, my=e.clientY-rect.top;
+        const pts = canvas._puntos||[];
+        const cerca = pts.find(p=>Math.hypot(p.x-mx,p.y-my)<9);
+        if(cerca){ tip.style.display="block"; tip.style.left=(mx+12)+"px"; tip.style.top=(my+8)+"px"; tip.textContent=cerca.label; }
+        else tip.style.display="none";
+    });
+    canvas.addEventListener("mouseleave", ()=>tip.style.display="none");
+
+    // Posicionar botones del volante en círculo
+    const angulos = [-90, 0, 90, 180];
+    document.querySelectorAll(".volante-btn").forEach((el,i)=>{
+        const rad = angulos[i]*Math.PI/180, R=82;
+        const x = 115 + Math.cos(rad)*R - 29, y = 115 + Math.sin(rad)*R - 29;
+        el.style.left = x+"px"; el.style.top = y+"px";
+    });
+});
+
+/* ── Analítica ────────────────────────────────────────────────────────── */
+function renderAnalitica(){
+    const porDistrito={}; vehiculos.forEach(v=>porDistrito[v.mapa_clave]=(porDistrito[v.mapa_clave]||0)+1);
+    const maxD = Math.max(...Object.values(porDistrito),1);
+    document.getElementById("barrasDistritoHud").innerHTML = Object.entries(porDistrito).sort((a,b)=>b[1]-a[1]).map(([n,c])=>
+        `<div class="barra-hud"><div class="nombre">${n}</div><div class="track"><div class="fill" style="width:${c/maxD*100}%"></div></div><div class="num">${c}</div></div>`
+    ).join("") || `<span style="color:var(--texto-op)">Sin datos</span>`;
+
+    const porCat={}; vehiculos.forEach(v=>porCat[v.categoria]=(porCat[v.categoria]||0)+1);
+    const maxC = Math.max(...Object.values(porCat),1);
+    document.getElementById("barrasCategoriaHud").innerHTML = Object.entries(porCat).sort((a,b)=>b[1]-a[1]).map(([n,c])=>
+        `<div class="barra-hud"><div class="nombre">${n}</div><div class="track"><div class="fill" style="width:${c/maxC*100}%; background:${COLOR_CAT[n]}"></div></div><div class="num">${c}</div></div>`
+    ).join("") || `<span style="color:var(--texto-op)">Sin datos</span>`;
+}
+function renderTipos(){
+    document.getElementById("gridTiposHud").innerHTML = Object.entries(tiposInfo).map(([n,cfg])=>`
+        <div class="tipo-ficha"><div class="ico">${cfg.icono}</div><h4>${n}</h4>
+            <div class="fila"><span>Largo</span><b>${cfg.largo}px</b></div>
+            <div class="fila"><span>Ancho</span><b>${cfg.ancho}px</b></div>
+            <div class="fila"><span>Vel. máx</span><b>${cfg.vel_max_kmh} km/h</b></div>
+            <div class="fila"><span>En flota</span><b>${vehiculos.filter(v=>v.categoria===n).length}</b></div>
+        </div>`).join("");
+}
+
+/* ── Modal ────────────────────────────────────────────────────────────── */
+function abrirModalCrear(){
+    editando=false;
+    document.getElementById("modalTitulo").textContent="Registrar Vehículo";
+    ["campoId","campoPlaca","campoTamano","campoUsuario","campoChofer","campoLicencia","campoSoat"].forEach(id=>document.getElementById(id).value="");
+    document.getElementById("campoColor").value="Blanco";
+    document.getElementById("campoCategoria").value="Automóvil";
+    document.getElementById("campoMapa").value="centro";
+    document.getElementById("modalFondo").classList.add("activo");
+    setTimeout(()=>document.getElementById("campoPlaca").focus(),50);
+}
+function abrirModalEditar(id){
+    const v = vehiculos.find(x=>x.id===id); if(!v) return;
+    editando=true;
+    document.getElementById("modalTitulo").textContent=`Editar Vehículo #${id}`;
+    document.getElementById("campoId").value=v.id;
+    document.getElementById("campoPlaca").value=v.placa;
+    document.getElementById("campoColor").value=v.color;
+    document.getElementById("campoCategoria").value=v.categoria;
+    document.getElementById("campoMapa").value=v.mapa_clave;
+    document.getElementById("campoTamano").value=v.tamaño||"";
+    document.getElementById("campoUsuario").value=v.usuario||"";
+    document.getElementById("campoChofer").value=v.chofer||"";
+    document.getElementById("campoLicencia").value=v.licencia||"";
+    document.getElementById("campoSoat").value=v.soat_vencimiento||"";
+    document.getElementById("modalFondo").classList.add("activo");
+}
+function cerrarModal(){ document.getElementById("modalFondo").classList.remove("activo"); }
+document.getElementById("modalFondo").addEventListener("click", e=>{ if(e.target.id==="modalFondo") cerrarModal(); });
+async function guardarVehiculo(){
+    const placa = document.getElementById("campoPlaca").value.trim();
+    if(!placa){ toast("La placa es obligatoria","error"); return; }
+    const payload = {
+        placa, color:document.getElementById("campoColor").value, categoria:document.getElementById("campoCategoria").value,
+        mapa_clave: document.getElementById("campoMapa").value.trim()||"centro",
+        tamaño: document.getElementById("campoTamano").value.trim()||null,
+        usuario: document.getElementById("campoUsuario").value.trim()||null,
+        chofer: document.getElementById("campoChofer").value.trim()||null,
+        licencia: document.getElementById("campoLicencia").value.trim()||null,
+        soat_vencimiento: document.getElementById("campoSoat").value.trim()||null,
+    };
+    try{
+        if(editando){
+            const id = document.getElementById("campoId").value;
+            await apiSend(`/api/vehiculos/${id}`,"PUT",payload);
+            toast(`${placa} actualizado`,"exito"); registrarLog(`✎ Editado ${placa} (#${id})`,"ok");
+        } else {
+            const nuevo = await apiSend("/api/vehiculos","POST",payload);
+            toast(`${placa} registrado (#${nuevo.id})`,"exito"); registrarLog(`＋ Registrado ${placa} (#${nuevo.id})`,"ok");
+        }
+        cerrarModal(); await cargarTodo();
+    }catch(e){ toast("Error: "+e.message,"error"); }
+}
+async function eliminarVehiculo(id, placa){
+    if(!confirm(`¿Eliminar ${placa} (ID ${id})?`)) return;
+    try{
+        await apiSend(`/api/vehiculos/${id}`,"DELETE");
+        toast(`${placa} eliminado`,"exito"); registrarLog(`🗑 Eliminado ${placa} (#${id})`,"err");
+        seleccionados.delete(id); await cargarTodo();
+    }catch(e){ toast("Error: "+e.message,"error"); }
+}
+
+/* ── Terminal (computadora de viaje) ─────────────────────────────────── */
+function tripLog(msg, tipo="info"){
+    const body = document.getElementById("tripBody");
+    const hora = new Date().toLocaleTimeString("es-PE",{hour12:false});
+    const l = document.createElement("div");
+    l.className = "l "+tipo;
+    l.innerHTML = `<span class="t">${hora}</span><span class="msg">${msg}</span>`;
+    body.appendChild(l); body.scrollTop = body.scrollHeight;
+}
+function parsearKV(partes){ const o={}; partes.forEach(p=>{ const i=p.indexOf("="); if(i>-1) o[p.slice(0,i)]=p.slice(i+1).replace(/_/g," "); }); return o; }
+async function ejecutarComando(linea){
+    tripLog(linea,"cmd");
+    const partes = linea.trim().split(/\s+/).filter(Boolean);
+    const cmd = (partes[0]||"").toLowerCase();
+    try{
+        switch(cmd){
+            case "": return;
+            case "help": case "?":
+                tripLog("help · ls · find &lt;texto&gt; · stats · add placa=X color=Y categoria=Z · del &lt;id&gt; confirm · refresh · clear","info"); return;
+            case "clear": document.getElementById("tripBody").innerHTML=""; return;
+            case "refresh": await cargarTodo(true); tripLog("Datos recargados.","ok"); return;
+            case "stats": {
+                const activos = vehiculos.filter(v=>v.activo).length;
+                tripLog(`Total ${vehiculos.length} · Activos ${activos} · En vivo ${(estadoVivo.activos||[]).length}`,"ok");
+                Object.keys(tiposInfo).forEach(n=>tripLog(`  ${n}: ${vehiculos.filter(v=>v.categoria===n).length}`,"info"));
+                return;
+            }
+            case "ls": case "list": {
+                const f = obtenerFiltrados();
+                if(f.length===0){ tripLog("Sin resultados.","err"); return; }
+                f.slice(0,20).forEach(v=>tripLog(`#${v.id} ${v.placa} ${v.categoria} ${v.mapa_clave}`,"info"));
+                return;
+            }
+            case "find": {
+                const q = partes.slice(1).join(" ").toLowerCase();
+                if(!q){ tripLog("Uso: find &lt;texto&gt;","err"); return; }
+                const r = vehiculos.filter(v=>`${v.placa} ${v.chofer||""}`.toLowerCase().includes(q));
+                if(r.length===0){ tripLog("Sin coincidencias.","err"); return; }
+                r.forEach(v=>tripLog(`#${v.id} ${v.placa} chofer:${v.chofer||"—"}`,"ok"));
+                return;
+            }
+            case "add": {
+                const kv = parsearKV(partes.slice(1));
+                if(!kv.placa||!kv.color||!kv.categoria){ tripLog("Uso: add placa=XXX color=Rojo categoria=Bus","err"); return; }
+                const nuevo = await apiSend("/api/vehiculos","POST",{
+                    placa:kv.placa, color:kv.color, categoria:kv.categoria, mapa_clave:kv.mapa||"centro",
+                    chofer:kv.chofer||null, usuario:kv.usuario||null, licencia:kv.licencia||null, soat_vencimiento:kv.soat||null,
+                });
+                tripLog(`Creado #${nuevo.id} ${nuevo.placa}`,"ok"); registrarLog(`＋ ${nuevo.placa} vía consola`,"ok");
+                await cargarTodo(); return;
+            }
+            case "del": case "delete": {
+                const id = partes[1];
+                if(!id||!/^\d+$/.test(id)){ tripLog("Uso: del &lt;id&gt; confirm","err"); return; }
+                if(partes[2]!=="confirm"){ tripLog(`Confirma con: del ${id} confirm`,"err"); return; }
+                await apiSend(`/api/vehiculos/${id}`,"DELETE");
+                tripLog(`#${id} eliminado.`,"ok"); registrarLog(`🗑 #${id} vía consola`,"err");
+                await cargarTodo(); return;
+            }
+            default: tripLog(`Comando no reconocido: '${cmd}'.`,"err");
+        }
+    }catch(e){ tripLog(`Error: ${e.message}`,"err"); }
+}
+const tripInput = document.getElementById("tripInput");
+tripInput.addEventListener("keydown", e=>{
+    if(e.key==="Enter"){
+        const val = tripInput.value;
+        if(val.trim()){ historialComandos.unshift(val); idxHist=-1; }
+        tripInput.value=""; ejecutarComando(val);
+    } else if(e.key==="ArrowUp"){ if(idxHist<historialComandos.length-1){ idxHist++; tripInput.value=historialComandos[idxHist]||""; } e.preventDefault(); }
+    else if(e.key==="ArrowDown"){ if(idxHist>0){ idxHist--; tripInput.value=historialComandos[idxHist]||""; } else { idxHist=-1; tripInput.value=""; } e.preventDefault(); }
+});
+document.getElementById("hud-terminal").addEventListener("click", ()=>tripInput.focus());
+
+/* ── Arranque ─────────────────────────────────────────────────────────── */
+tripLog("Computadora de viaje lista. Escribe 'help' para ver comandos.","info");
+cargarTodo();
+setInterval(cargarTodo, 5000);
+</script>
+</body>
+</html>
